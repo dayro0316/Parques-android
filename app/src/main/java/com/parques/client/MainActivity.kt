@@ -2,15 +2,18 @@ package com.parques.client
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.graphics.Color
 import android.graphics.Typeface
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.text.InputType
+import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.EditText
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.RadioButton
 import android.widget.RadioGroup
@@ -37,6 +40,16 @@ class MainActivity : Activity(), GameClient.Listener {
     private var pending: Triple<String, String, String>? = null
     private var attempt = 0
     private val maxAttempts = 3
+
+    private val RULES = """
+        • Juegan de 2 a 4 personas, cada una con 4 fichas de un color. Puedes completar la mesa con bots.
+        • Lanza los dos dados: cada dado se usa por separado para mover una ficha.
+        • Con un par (dados iguales) puedes sacar una ficha de la cárcel y repites turno.
+        • Tres pares seguidos: eliges una ficha y la llevas directo a la meta.
+        • Las casillas marrones (salidas y seguros) protegen tus fichas.
+        • Si caes sobre una ficha rival fuera de un seguro, la mandas a la cárcel.
+        • Gana quien lleve sus 4 fichas a la meta, en el centro del tablero.
+    """.trimIndent()
 
     // Para vibración y sonido
     private var wasMyRoll = false
@@ -106,39 +119,86 @@ class MainActivity : Activity(), GameClient.Listener {
 
     // ---------------------------------------------------------------- pantalla de login
     private fun showLogin() {
-        val root = column()
-        root.addView(TextView(this).apply { text = "Parqués Online"; textSize = 24f })
+        val brown = Color.parseColor("#5B2C13")
+        val cream = Color.parseColor("#FDF3D0")
+        val root = column().apply {
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(dp(24), dp(32), dp(24), dp(24))
+        }
+
+        // Logo, nombre y frase
+        root.addView(ImageView(this).apply { setImageResource(R.mipmap.ic_launcher) }, LinearLayout.LayoutParams(dp(110), dp(110)))
+        root.addView(TextView(this).apply {
+            text = "Parqués Online"
+            textSize = 26f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(brown)
+            gravity = Gravity.CENTER
+            setPadding(0, dp(10), 0, 0)
+        })
+        root.addView(TextView(this).apply {
+            text = "Juega con tus amigos desde cualquier lugar"
+            textSize = 14f
+            setTextColor(Color.parseColor("#6D5A4A"))
+            gravity = Gravity.CENTER
+            setPadding(0, dp(2), 0, dp(10))
+        })
+
+        // Franja con los cuatro colores del juego
+        val stripe = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        for (c in listOf("#E60000", "#FFE600", "#0A7D0A", "#0A0AE6")) {
+            stripe.addView(View(this).apply { setBackgroundColor(Color.parseColor(c)) }, LinearLayout.LayoutParams(0, dp(6), 1f))
+        }
+        root.addView(stripe, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(6)))
+
+        // Datos de acceso
         val etUser = EditText(this).apply {
             hint = "Usuario"
+            setSingleLine()
             setText(prefs.getString("user", ""))
         }
         val etPass = EditText(this).apply {
             hint = "Clave"
+            setSingleLine()
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
             setText(prefs.getString("pass", ""))
         }
-        root.addView(etUser)
-        root.addView(etPass)
+        root.addView(etUser, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        root.addView(etPass, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
 
+        val bLogin = button("Ingresar") {
+            startAuth("login", etUser.text.toString().trim(), etPass.text.toString())
+        }.apply {
+            setBackgroundColor(Color.parseColor("#0A7D0A"))
+            setTextColor(Color.WHITE)
+            setTypeface(null, Typeface.BOLD)
+        }
+        val bRegister = button("Crear cuenta") {
+            startAuth("register", etUser.text.toString().trim(), etPass.text.toString())
+        }
+        root.addView(bLogin, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        root.addView(bRegister, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+
+        // Estado de la conexión (Conectando…, Reintentando…)
         val status = TextView(this).apply {
             textSize = 14f
+            setTextColor(brown)
+            gravity = Gravity.CENTER
             visibility = View.GONE
             setPadding(0, dp(8), 0, dp(8))
         }
         root.addView(status)
 
-        val bLogin = button("Ingresar") {
-            startAuth("login", etUser.text.toString().trim(), etPass.text.toString())
-        }
-        val bRegister = button("Registrarse") {
-            startAuth("register", etUser.text.toString().trim(), etPass.text.toString())
-        }
-        root.addView(row(bLogin, bRegister))
+        root.addView(button("Cómo se juega") { dialog("Cómo se juega", RULES) })
 
         loginStatus = status
         btnLogin = bLogin
         btnRegister = bRegister
-        setContentView(ScrollView(this).apply { addView(root) })
+        setContentView(ScrollView(this).apply {
+            isFillViewport = true
+            setBackgroundColor(cream)
+            addView(root)
+        })
     }
 
     /** Muestra u oculta el mensaje de estado y bloquea los botones mientras se conecta. */
