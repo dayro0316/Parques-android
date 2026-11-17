@@ -1,6 +1,12 @@
 package com.parques.client
 
-/** Geometría del tablero en cruz (misma que common/board.py y web/index.html). */
+import org.json.JSONArray
+import org.json.JSONObject
+
+/**
+ * Tablero en cruz de la Figura 1 (misma geometría que common/board.py y web/index.html).
+ * Lienzo de SIZE x SIZE unidades; BoardView lo escala a la pantalla.
+ */
 object Board {
     /** Orden antihorario: arriba, izquierda, abajo, derecha. */
     val COLORS = listOf("red", "yellow", "blue", "green")
@@ -9,16 +15,64 @@ object Board {
 
     const val RING = 68
     const val SEGMENT = 17
-    const val GRID = 19
     const val JAIL = -1
-    const val LAST = 60
-    const val GOAL = 69
-    private const val START_K = 16
-    private val SAFE_K = listOf(0, 8, 12)
+    const val LAST = 63      // último paso del anillo (la punta del propio brazo)
+    const val GOAL = 71      // 64..70 es el pasillo de 7 casillas
+    private const val START_K = 10
 
-    /** 4 salidas + 12 seguros. */
-    val SALIDA: Set<Int> = (0..3).map { SEGMENT * it + START_K }.toSet()
-    val SEGURO: Set<Int> = (0..3).flatMap { i -> SAFE_K.map { SEGMENT * i + it } }.toSet()
+    private val geo = JSONObject(BoardGeometry.JSON)
+
+    val SIZE: Float = geo.getDouble("size").toFloat()
+    val JAIL_RADIUS: Float = geo.getDouble("jailRadius").toFloat()
+
+    /** Círculo central: x, y, radio. */
+    val CENTER: List<Float> = geo.getJSONArray("center").let { a -> (0 until 3).map { a.getDouble(it).toFloat() } }
+
+    private fun point(a: JSONArray) = Pair(a.getDouble(0).toFloat(), a.getDouble(1).toFloat())
+
+    private fun flat(a: JSONArray): FloatArray {
+        val out = FloatArray(a.length() * 2)
+        for (i in 0 until a.length()) {
+            val p = a.getJSONArray(i)
+            out[2 * i] = p.getDouble(0).toFloat()
+            out[2 * i + 1] = p.getDouble(1).toFloat()
+        }
+        return out
+    }
+
+    /** Polígonos (x0,y0,x1,y1,...) de las 68 casillas del anillo. */
+    val ringPolys: List<FloatArray> = geo.getJSONArray("ring").let { a ->
+        (0 until a.length()).map { flat(a.getJSONObject(it).getJSONArray("p")) }
+    }
+    val ringCenters: List<Pair<Float, Float>> = geo.getJSONArray("ring").let { a ->
+        (0 until a.length()).map { point(a.getJSONObject(it).getJSONArray("c")) }
+    }
+
+    /** lanePolys[color][j-1]: casilla j (1..7) del pasillo. */
+    val lanePolys: List<List<FloatArray>> = geo.getJSONArray("lane").let { a ->
+        (0 until a.length()).map { i ->
+            val l = a.getJSONArray(i)
+            (0 until l.length()).map { flat(l.getJSONObject(it).getJSONArray("p")) }
+        }
+    }
+    val laneCenters: List<List<Pair<Float, Float>>> = geo.getJSONArray("lane").let { a ->
+        (0 until a.length()).map { i ->
+            val l = a.getJSONArray(i)
+            (0 until l.length()).map { point(l.getJSONObject(it).getJSONArray("c")) }
+        }
+    }
+
+    /** Centros de las 4 fichas en la cárcel de cada color. */
+    val jailCenters: List<List<Pair<Float, Float>>> = geo.getJSONArray("jail").let { a ->
+        (0 until a.length()).map { i ->
+            val l = a.getJSONArray(i)
+            (0 until l.length()).map { point(l.getJSONArray(it)) }
+        }
+    }
+
+    /** 4 salidas + 8 seguros (la salida también protege). */
+    val SALIDA: Set<Int> = geo.getJSONArray("salida").let { a -> (0 until a.length()).map { a.getInt(it) }.toSet() }
+    val SEGURO: Set<Int> = geo.getJSONArray("seguro").let { a -> (0 until a.length()).map { a.getInt(it) }.toSet() }
     val SAFE: Set<Int> = SALIDA + SEGURO
 
     fun startIndex(color: String) = SEGMENT * COLORS.indexOf(color) + START_K
@@ -26,51 +80,14 @@ object Board {
     fun absIndex(color: String, p: Int): Int? =
         if (p in 0..LAST) (startIndex(color) + p) % RING else null
 
-    private fun local(k: Int): Pair<Int, Int> = when {
-        k <= 7 -> Pair(10, 7 - k)
-        k == 8 -> Pair(9, 0)
-        else -> Pair(8, k - 9)
-    }
-
-    private fun rot(i: Int, x: Int, y: Int): Pair<Float, Float> {
-        val n = GRID - 1
-        val r = when (i) {
-            0 -> Pair(x, y)
-            1 -> Pair(y, n - x)
-            2 -> Pair(n - x, n - y)
-            else -> Pair(n - y, x)
-        }
-        return Pair(r.first.toFloat(), r.second.toFloat())
-    }
-
-    fun ringCell(idx: Int): Pair<Float, Float> {
-        val (x, y) = local(idx % SEGMENT)
-        return rot(idx / SEGMENT, x, y)
-    }
-
-    fun laneCell(i: Int, j: Int): Pair<Float, Float> = rot(i, 9, j)
-
-    private val JAIL_OFFSETS = listOf(2 to 2, 5 to 2, 2 to 5, 5 to 5)
-
-    fun jailCell(i: Int, slot: Int): Pair<Float, Float> {
-        val (x, y) = JAIL_OFFSETS[slot]
-        val n = GRID - 1
-        val c = when (i) {
-            0 -> Pair(x, y)
-            1 -> Pair(x, n - y)
-            2 -> Pair(n - x, n - y)
-            else -> Pair(n - x, y)
-        }
-        return Pair(c.first.toFloat(), c.second.toFloat())
-    }
-
+    /** Centro (en unidades del lienzo) donde se dibuja una ficha. */
     fun cellOf(color: String, p: Int, slot: Int): Pair<Float, Float> {
         val i = COLORS.indexOf(color)
         return when {
-            p == JAIL -> jailCell(i, slot)
-            p <= LAST -> ringCell(absIndex(color, p)!!)
-            p < GOAL -> laneCell(i, p - LAST)
-            else -> Pair(9f + (slot - 1.5f) * 0.45f, 9f)
+            p == JAIL -> jailCenters[i][slot]
+            p <= LAST -> ringCenters[absIndex(color, p)!!]
+            p < GOAL -> laneCenters[i][p - LAST - 1]
+            else -> Pair(SIZE / 2 + (slot - 1.5f) * 40f, SIZE / 2)
         }
     }
 }
