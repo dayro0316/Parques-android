@@ -4,6 +4,8 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.graphics.Typeface
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.text.InputType
 import android.view.View
 import android.view.ViewGroup
@@ -22,10 +24,27 @@ import org.json.JSONObject
 class MainActivity : Activity(), GameClient.Listener {
 
     private val client = GameClient(this)
+    private val handler = Handler(Looper.getMainLooper())
+    private val prefs by lazy { getSharedPreferences("parques", MODE_PRIVATE) }
+    private val feedback by lazy { Feedback(this) }
+
     private var user: String? = null
     private var state: JSONObject? = null
     private var moves = JSONArray()
     private var seen = 0
+
+    // Inicio de sesión en curso: (tipo, usuario, clave)
+    private var pending: Triple<String, String, String>? = null
+    private var attempt = 0
+    private val maxAttempts = 3
+
+    // Para vibración y sonido
+    private var wasMyRoll = false
+    private var lastMover: String? = null
+
+    private var loginStatus: TextView? = null
+    private var btnLogin: Button? = null
+    private var btnRegister: Button? = null
 
     private lateinit var boardView: BoardView
     private lateinit var tvLobby: TextView
@@ -42,10 +61,16 @@ class MainActivity : Activity(), GameClient.Listener {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         showLogin()
+        // Si ya hay usuario guardado, entra solo.
+        val u = prefs.getString("user", "") ?: ""
+        val p = prefs.getString("pass", "") ?: ""
+        if (u.isNotEmpty() && p.isNotEmpty()) startAuth("login", u, p)
     }
 
     override fun onDestroy() {
+        handler.removeCallbacksAndMessages(null)
         client.close()
+        feedback.release()
         super.onDestroy()
     }
 
@@ -82,32 +107,98 @@ class MainActivity : Activity(), GameClient.Listener {
     // ---------------------------------------------------------------- pantalla de login
     private fun showLogin() {
         val root = column()
-        root.addView(TextView(this).apply { text = "Parqués distribuido"; textSize = 24f })
-        val etServer = EditText(this).apply {
-            hint = "Servidor (ip:puerto o wss://dominio)"
-            setText("10.0.2.2:8080") // 10.0.2.2 = el PC anfitrión desde el emulador
+        root.addView(TextView(this).apply { text = "Parqués Online"; textSize = 24f })
+        val etUser = EditText(this).apply {
+            hint = "Usuario"
+            setText(prefs.getString("user", ""))
         }
-        val etUser = EditText(this).apply { hint = "Usuario" }
         val etPass = EditText(this).apply {
             hint = "Clave"
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            setText(prefs.getString("pass", ""))
         }
-        root.addView(etServer)
         root.addView(etUser)
         root.addView(etPass)
 
-        fun auth(kind: String) {
-            val send = {
-                client.send(kind, "user" to etUser.text.toString().trim(), "password" to etPass.text.toString())
-            }
-            if (client.isOpen) send() else client.connect(GameClient.normalizeUrl(etServer.text.toString())) { send() }
+        val status = TextView(this).apply {
+            textSize = 14f
+            visibility = View.GONE
+            setPadding(0, dp(8), 0, dp(8))
         }
-        root.addView(row(button("Ingresar") { auth("login") }, button("Registrarse") { auth("register") }))
+        root.addView(status)
+
+        val bLogin = button("Ingresar") {
+            startAuth("login", etUser.text.toString().trim(), etPass.text.toString())
+        }
+        val bRegister = button("Registrarse") {
+            startAuth("register", etUser.text.toString().trim(), etPass.text.toString())
+        }
+        root.addView(row(bLogin, bRegister))
+
+        loginStatus = status
+        btnLogin = bLogin
+        btnRegister = bRegister
         setContentView(ScrollView(this).apply { addView(root) })
+    }
+
+    /** Muestra u oculta el mensaje de estado y bloquea los botones mientras se conecta. */
+    private fun setBusy(busy: Boolean, msg: String?) {
+        loginStatus?.let {
+            it.visibility = if (busy) View.VISIBLE else View.GONE
+            it.text = msg ?: ""
+        }
+        btnLogin?.isEnabled = !busy
+        btnRegister?.isEnabled = !busy
+    }
+
+    private fun startAuth(kind: String, u: String, p: String) {
+        if (u.isEmpty() || p.isEmpty()) {
+            toast("Escribe usuario y clave")
+            return
+        }
+        if (Config.SERVER_URL.contains("CAMBIA")) {
+            toast("Falta poner la dirección del servidor en Config.kt")
+            return
+        }
+        pending = Triple(kind, u, p)
+        attempt = 1
+        sendAuth()
+    }
+
+    private fun sendAuth() {
+        val (kind, u, p) = pending ?: return
+        val send = { client.send(kind, "user" to u, "password" to p) }
+        if (client.isOpen) {
+            send()
+            return
+        }
+        val msg = if (attempt == 1) {
+            "Conectando con el servidor…\n(si estaba dormido puede tardar hasta 1 minuto)"
+        } else {
+            "Reintentando… ($attempt/$maxAttempts)\n(el servidor se está despertando)"
+        }
+        setBusy(true, msg)
+        client.connect(GameClient.normalizeUrl(Config.SERVER_URL)) { send() }
+    }
+
+    private fun logout() {
+        prefs.edit().clear().apply()
+        handler.removeCallbacksAndMessages(null)
+        client.close()
+        user = null
+        state = null
+        pending = null
+        moves = JSONArray()
+        wasMyRoll = false
+        showLogin()
     }
 
     // ---------------------------------------------------------------- pantalla de juego
     private fun showGame() {
+        loginStatus = null
+        btnLogin = null
+        btnRegister = null
+
         val root = column()
 
         boardView = BoardView(this).also {
@@ -162,6 +253,9 @@ class MainActivity : Activity(), GameClient.Listener {
         etChat = EditText(this).apply { hint = "Chat..." }
         root.addView(row(etChat, button("Enviar") { sendChat() }))
 
+        // Cerrar sesión (borra el usuario guardado)
+        root.addView(button("Cerrar sesión") { logout() })
+
         setContentView(ScrollView(this).apply { addView(root) })
     }
 
@@ -208,11 +302,27 @@ class MainActivity : Activity(), GameClient.Listener {
     override fun onClosed(reason: String) {
         runOnUiThread {
             if (isFinishing) return@runOnUiThread
-            toast("Conexión cerrada: $reason")
             if (user != null) {
+                // Se cayó la conexión durante la partida.
+                toast("Conexión cerrada: $reason")
                 user = null
                 state = null
+                pending = null
+                wasMyRoll = false
                 showLogin()
+            } else if (pending != null) {
+                // Falló al conectar: reintenta (Render puede estar despertando).
+                if (attempt < maxAttempts) {
+                    attempt += 1
+                    setBusy(true, "Reintentando… ($attempt/$maxAttempts)\n(el servidor se está despertando)")
+                    handler.postDelayed({
+                        if (pending != null && user == null) sendAuth()
+                    }, 3000)
+                } else {
+                    pending = null
+                    setBusy(false, null)
+                    toast("No se pudo conectar con el servidor. Revisa tu internet e inténtalo de nuevo.")
+                }
             }
         }
     }
@@ -221,12 +331,25 @@ class MainActivity : Activity(), GameClient.Listener {
         when (m.optString("type")) {
             "auth_ok" -> {
                 user = m.getString("user")
+                pending?.let {
+                    prefs.edit().putString("user", it.second).putString("pass", it.third).apply()
+                }
+                pending = null
+                wasMyRoll = false
                 showGame()
             }
-            "error" -> if (user == null) toast(m.optString("message")) else log("⚠ " + m.optString("message"))
+            "error" -> if (user == null) {
+                toast(m.optString("message"))
+                pending = null
+                setBusy(false, null)
+            } else {
+                log("⚠ " + m.optString("message"))
+            }
             "lobby" -> if (user != null) onLobby(m)
-            "game_start" -> {
+            "game_start" -> if (user != null) {
                 seen = 0
+                wasMyRoll = false
+                lastMover = null
                 log("Partida iniciada. Ajustes Berkeley: " + m.optJSONObject("sync"))
             }
             "time_adjust" -> if (user != null) {
@@ -239,6 +362,7 @@ class MainActivity : Activity(), GameClient.Listener {
                 btnRoll.isEnabled = false
                 btnRec.isEnabled = false
                 btnPlay.isEnabled = false
+                wasMyRoll = false
                 dialog("Fin de la partida", "Ganó: " + (if (m.isNull("winner")) "nadie" else m.getString("winner")))
             }
             "recommendation" -> if (user != null) {
@@ -246,7 +370,7 @@ class MainActivity : Activity(), GameClient.Listener {
                 (movesGroup.getChildAt(m.getInt("move")) as? RadioButton)?.isChecked = true
             }
             "chat" -> if (user != null) log("💬 ${m.getString("user")}: ${m.getString("text")}")
-            "stats_top" -> {
+            "stats_top" -> if (user != null) {
                 val rows = m.getJSONArray("rows")
                 val sb = StringBuilder()
                 for (i in 0 until rows.length()) {
@@ -255,13 +379,13 @@ class MainActivity : Activity(), GameClient.Listener {
                 }
                 dialog("Ranking", if (sb.isEmpty()) "Sin datos" else sb.toString())
             }
-            "stats_prob" -> dialog(
+            "stats_prob" -> if (user != null) dialog(
                 "Probabilidad",
                 "%s: %.1f%% de ganar\n(%d victorias en %d partidas)".format(
                     m.getString("user"), m.getDouble("probability") * 100, m.getInt("wins"), m.getInt("games")
                 )
             )
-            "history" -> {
+            "history" -> if (user != null) {
                 val rows = m.getJSONArray("rows")
                 val sb = StringBuilder()
                 for (i in 0 until rows.length()) {
@@ -287,6 +411,20 @@ class MainActivity : Activity(), GameClient.Listener {
         tvLobby.text = if (lines.isEmpty()) "Sala vacía" else lines.joinToString("\n")
     }
 
+    /** Vibración y sonido según las líneas nuevas del registro de la partida. */
+    private fun react(line: String) {
+        val me = user ?: return
+        when {
+            line.contains(" mueve la ficha") -> lastMover = line.substringBefore(" mueve la ficha")
+            line.contains(" saca la ficha") -> lastMover = line.substringBefore(" saca la ficha")
+            line.startsWith("$me lanza") && line.contains("¡par!") -> feedback.pair()
+            line.contains(" regresa la ficha") && line.contains("a la cárcel") -> {
+                val victim = line.removePrefix("¡").substringBefore(" regresa la ficha")
+                if (victim == me) feedback.lost() else if (lastMover == me) feedback.captured()
+            }
+        }
+    }
+
     private fun onState(m: JSONObject) {
         state = m
         boardView.state = m
@@ -294,7 +432,13 @@ class MainActivity : Activity(), GameClient.Listener {
         val total = m.getInt("log_total")
         val n = total - seen
         val lines = m.getJSONArray("log")
-        if (n > 0) for (i in maxOf(0, lines.length() - n) until lines.length()) log(lines.getString(i))
+        if (n > 0) {
+            for (i in maxOf(0, lines.length() - n) until lines.length()) {
+                val line = lines.getString(i)
+                log(line)
+                react(line)
+            }
+        }
         seen = total
 
         val current = if (m.isNull("current")) null else m.getString("current")
@@ -304,6 +448,11 @@ class MainActivity : Activity(), GameClient.Listener {
         btnRoll.isEnabled = mine && phase == "roll"
         btnRec.isEnabled = canMove
         btnPlay.isEnabled = canMove
+
+        // Aviso cuando pasa a ser tu turno de lanzar
+        val myRoll = mine && phase == "roll"
+        if (myRoll && !wasMyRoll) feedback.myTurn()
+        wasMyRoll = myRoll
 
         moves = m.getJSONArray("moves")
         movesGroup.removeAllViews()
@@ -316,7 +465,7 @@ class MainActivity : Activity(), GameClient.Listener {
                     id = View.generateViewId()
                 })
             }
-            (movesGroup.getChildAt(0) as RadioButton).isChecked = true
+            (movesGroup.getChildAt(0) as? RadioButton)?.isChecked = true
         }
 
         val dice = m.optJSONArray("dice")

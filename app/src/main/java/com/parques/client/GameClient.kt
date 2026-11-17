@@ -11,6 +11,9 @@ import java.util.concurrent.TimeUnit
 /**
  * Capa de red: WebSocket contra el servidor (mismo protocolo JSON que los demás clientes).
  * Responde por sí misma a `time_req` (sincronización de Berkeley), sin pasar por la interfaz.
+ *
+ * Cada conexión tiene un número de "generación": si se abre otra o se cierra esta,
+ * los avisos tardíos de la conexión vieja se ignoran.
  */
 class GameClient(private val listener: Listener) {
 
@@ -20,8 +23,17 @@ class GameClient(private val listener: Listener) {
         fun onClosed(reason: String)
     }
 
-    private val http = OkHttpClient.Builder().pingInterval(20, TimeUnit.SECONDS).build()
+    // Timeout de conexión largo: Render gratis puede tardar ~1 minuto en despertar.
+    private val http = OkHttpClient.Builder()
+        .connectTimeout(90, TimeUnit.SECONDS)
+        .readTimeout(0, TimeUnit.SECONDS)
+        .pingInterval(20, TimeUnit.SECONDS)
+        .build()
+
     private var ws: WebSocket? = null
+
+    @Volatile
+    private var generation = 0
 
     @Volatile
     var isOpen = false
@@ -33,14 +45,25 @@ class GameClient(private val listener: Listener) {
         private set
 
     fun connect(url: String, onReady: () -> Unit) {
+        val gen = synchronized(this) {
+            ws?.cancel()
+            ws = null
+            isOpen = false
+            generation += 1
+            generation
+        }
         val request = Request.Builder().url(url).build()
-        ws = http.newWebSocket(request, object : WebSocketListener() {
+        val socket = http.newWebSocket(request, object : WebSocketListener() {
+            private fun current() = gen == generation
+
             override fun onOpen(webSocket: WebSocket, response: Response) {
+                if (!current()) return
                 isOpen = true
                 onReady()
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
+                if (!current()) return
                 val m = try { JSONObject(text) } catch (e: Exception) { return }
                 when (m.optString("type")) {
                     "time_req" -> send(
@@ -56,15 +79,20 @@ class GameClient(private val listener: Listener) {
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                if (!current()) return
                 isOpen = false
                 listener.onClosed(t.message ?: "error de red")
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                if (!current()) return
                 isOpen = false
                 listener.onClosed(reason.ifEmpty { "cerrado" })
             }
         })
+        synchronized(this) {
+            if (gen == generation) ws = socket else socket.cancel()
+        }
     }
 
     fun send(o: JSONObject) {
@@ -77,9 +105,14 @@ class GameClient(private val listener: Listener) {
         send(o)
     }
 
+    /** Cierre voluntario: no genera aviso a la interfaz. */
     fun close() {
-        isOpen = false
-        ws?.close(1000, null)
+        synchronized(this) {
+            generation += 1
+            isOpen = false
+            ws?.close(1000, null)
+            ws = null
+        }
     }
 
     companion object {
