@@ -7,6 +7,7 @@ import android.graphics.Typeface
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.text.InputType
 import android.view.Gravity
 import android.view.View
@@ -68,6 +69,22 @@ class MainActivity : Activity(), GameClient.Listener {
     private lateinit var tvLobby: TextView
     private lateinit var tvDice: TextView
     private lateinit var tvHint: TextView
+    private lateinit var tvTimer: TextView
+
+    // Cuenta regresiva del turno (el servidor manda `turn_left` en cada estado)
+    private var turnDeadline = 0L          // SystemClock.elapsedRealtime() en que vence; 0 = sin cuenta
+    private val timerTick = object : Runnable {
+        override fun run() {
+            if (turnDeadline == 0L) {
+                tvTimer.text = ""
+                return
+            }
+            val left = maxOf(0L, (turnDeadline - SystemClock.elapsedRealtime() + 999) / 1000)
+            tvTimer.text = "⏱ $left s"
+            tvTimer.setTextColor(Color.parseColor(if (left <= 5) "#d50000" else "#5b2c13"))
+            handler.postDelayed(this, 250)
+        }
+    }
     private lateinit var diceView: DiceView
     private var canMoveNow = false
     private val rollRegex = Regex("""lanza \d+ y \d+""")
@@ -302,10 +319,16 @@ class MainActivity : Activity(), GameClient.Listener {
             setTextColor(Color.parseColor("#0a7d0a"))
             gravity = Gravity.CENTER_HORIZONTAL
         }
+        tvTimer = TextView(this).apply {
+            textSize = 18f
+            setTypeface(null, Typeface.BOLD)
+            gravity = Gravity.CENTER_HORIZONTAL
+        }
         tvPlayers = TextView(this).apply { typeface = Typeface.MONOSPACE; textSize = 12f }
         root.addView(diceView, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         root.addView(tvDice, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         root.addView(tvHint, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        root.addView(tvTimer, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         root.addView(tvPlayers)
         btnRoll = button("Lanzar dados") { client.send("roll") }.apply { isEnabled = false }
         btnRec = button("Recomendar") { client.send("recommend") }.apply { isEnabled = false }
@@ -487,6 +510,8 @@ class MainActivity : Activity(), GameClient.Listener {
                 canMoveNow = false
                 boardView.movable = emptySet()
                 tvHint.text = ""
+                turnDeadline = 0L
+                tvTimer.text = ""
                 wasMyRoll = false
                 dialog("Fin de la partida", "Ganó: " + (if (m.isNull("winner")) "nadie" else m.getString("winner")))
             }
@@ -614,6 +639,12 @@ class MainActivity : Activity(), GameClient.Listener {
             mine && phase == "roll" -> "Lanza los dados"
             else -> ""
         }
+
+        // cuenta regresiva del turno
+        handler.removeCallbacks(timerTick)
+        turnDeadline = if (m.isNull("turn_left")) 0L
+            else SystemClock.elapsedRealtime() + (m.getDouble("turn_left") * 1000).toLong()
+        timerTick.run()
 
         val dice = m.optJSONArray("dice")
         if (dice != null) {
