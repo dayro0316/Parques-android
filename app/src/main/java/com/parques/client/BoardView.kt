@@ -9,6 +9,7 @@ import android.view.MotionEvent
 import android.view.View
 import org.json.JSONObject
 import kotlin.math.hypot
+import kotlin.math.sin
 
 /**
  * Dibuja el tablero de la Figura 1 a partir del último `state` del servidor.
@@ -21,6 +22,10 @@ class BoardView(context: Context) : View(context) {
 
     /** Jugada resaltada (origen naranja, destino verde). */
     var selected: JSONObject? = null
+        set(value) { field = value; invalidate() }
+
+    /** Fichas que se pueden mover ahora: laten con un aro verde para invitar a tocarlas. */
+    var movable: Set<Int> = emptySet()
         set(value) { field = value; invalidate() }
 
     var user: String = ""
@@ -147,7 +152,22 @@ class BoardView(context: Context) : View(context) {
                 }
             }
         }
+        // pulso de las fichas que se pueden mover
+        val stNow = state
+        val meNow = if (stNow != null) findPlayer(stNow) else null
+        if (meNow != null && movable.isNotEmpty()) {
+            val pulse = ((sin(System.currentTimeMillis() / 160.0) + 1.0) / 2.0).toFloat()
+            val pieces = meNow.getJSONArray("pieces")
+            for (slot in movable) {
+                if (slot < 0 || slot >= pieces.length()) continue
+                val prog = pieces.getInt(slot)
+                val base = if (prog == Board.JAIL) 38f else 25f
+                ring(canvas, Board.cellOf(meNow.getString("color"), prog, slot), base + pulse * 5f,
+                    Color.parseColor("#00c853"), 3f + pulse * 2f)
+            }
+        }
         canvas.restore()
+        if (movable.isNotEmpty()) postInvalidateOnAnimation()
     }
 
     private fun findPlayer(st: JSONObject): JSONObject? {
@@ -167,13 +187,17 @@ class BoardView(context: Context) : View(context) {
                 val tx = event.x / k
                 val ty = event.y / k
                 val pieces = me.getJSONArray("pieces")
+                var best = -1
+                var bestDist = Float.MAX_VALUE
                 for (slot in 0 until pieces.length()) {
                     val (x, y) = Board.cellOf(me.getString("color"), pieces.getInt(slot), slot)
-                    if (hypot(tx - x, ty - y) < 48f) {
-                        onPieceTap?.invoke(slot)
-                        break
+                    val dist = hypot(tx - x, ty - y)
+                    if (dist < 48f && dist < bestDist) {
+                        best = slot
+                        bestDist = dist
                     }
                 }
+                if (best >= 0) onPieceTap?.invoke(best)
             }
             performClick()
         }

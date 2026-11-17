@@ -67,6 +67,10 @@ class MainActivity : Activity(), GameClient.Listener {
     private lateinit var boardView: BoardView
     private lateinit var tvLobby: TextView
     private lateinit var tvDice: TextView
+    private lateinit var tvHint: TextView
+    private lateinit var diceView: DiceView
+    private var canMoveNow = false
+    private val rollRegex = Regex("""lanza \d+ y \d+""")
     private lateinit var tvPlayers: TextView
     private lateinit var tvSync: TextView
     private lateinit var tvLog: TextView
@@ -290,9 +294,18 @@ class MainActivity : Activity(), GameClient.Listener {
 
         // Partida
         root.addView(TextView(this).apply { text = "Partida"; textSize = 16f; setTypeface(null, Typeface.BOLD) })
-        tvDice = TextView(this).apply { text = "Dados: -"; textSize = 20f }
+        diceView = DiceView(this)
+        tvDice = TextView(this).apply { text = "Dados: -"; textSize = 13f; gravity = Gravity.CENTER_HORIZONTAL }
+        tvHint = TextView(this).apply {
+            textSize = 14f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.parseColor("#0a7d0a"))
+            gravity = Gravity.CENTER_HORIZONTAL
+        }
         tvPlayers = TextView(this).apply { typeface = Typeface.MONOSPACE; textSize = 12f }
-        root.addView(tvDice)
+        root.addView(diceView, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        root.addView(tvDice, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        root.addView(tvHint, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         root.addView(tvPlayers)
         btnRoll = button("Lanzar dados") { client.send("roll") }.apply { isEnabled = false }
         btnRec = button("Recomendar") { client.send("recommend") }.apply { isEnabled = false }
@@ -302,8 +315,9 @@ class MainActivity : Activity(), GameClient.Listener {
             val rb = group.findViewById<RadioButton>(checkedId)
             boardView.selected = if (rb != null) moves.getJSONObject(rb.tag as Int) else null
         }
+        movesGroup.visibility = View.GONE      // las jugadas se hacen tocando la ficha en el tablero
         root.addView(movesGroup)
-        btnPlay = button("Jugar seleccionada") { play() }.apply { isEnabled = false }
+        btnPlay = button("Jugar seleccionada") { play() }.apply { isEnabled = false; visibility = View.GONE }
         root.addView(btnPlay)
 
         // Estadísticas
@@ -341,14 +355,43 @@ class MainActivity : Activity(), GameClient.Listener {
         }
     }
 
-    /** Tocar una ficha propia selecciona su primera jugada legal. */
+    /**
+     * Tocar una ficha propia la mueve directamente. Si esa ficha puede jugarse con cualquiera de los dos dados,
+     * pregunta con cuál. Una ficha en la cárcel usa la salida disponible (vale cualquiera de las que están en la cárcel).
+     */
     private fun onPieceTap(slot: Int) {
-        for (i in 0 until moves.length()) {
-            if (moves.getJSONObject(i).getInt("piece") == slot) {
-                (movesGroup.getChildAt(i) as? RadioButton)?.isChecked = true
-                return
+        if (!canMoveNow) return
+        val opts = ArrayList<Int>()
+        for (i in 0 until moves.length()) if (moves.getJSONObject(i).getInt("piece") == slot) opts.add(i)
+        if (opts.isEmpty()) {
+            val inJail = myPieces()?.let { slot < it.length() && it.getInt(slot) == Board.JAIL } ?: false
+            if (inJail) {
+                for (i in 0 until moves.length()) if (moves.getJSONObject(i).getString("kind") == "exit") opts.add(i)
             }
         }
+        when {
+            opts.isEmpty() -> tvHint.text = "Esa ficha no se puede mover con estos dados"
+            opts.size == 1 -> client.send("move", "index" to opts[0])
+            else -> {
+                val labels = opts.map {
+                    val mv = moves.getJSONObject(it)
+                    if (mv.getString("kind") == "move") "Avanzar ${mv.getInt("die")}" else describe(mv)
+                }.toTypedArray<CharSequence>()
+                AlertDialog.Builder(this)
+                    .setTitle("¿Con cuál dado?")
+                    .setItems(labels) { _, which -> if (canMoveNow) client.send("move", "index" to opts[which]) }
+                    .show()
+            }
+        }
+    }
+
+    private fun myPieces(): JSONArray? {
+        val players = state?.getJSONArray("players") ?: return null
+        for (i in 0 until players.length()) {
+            val p = players.getJSONObject(i)
+            if (p.getString("name") == user) return p.getJSONArray("pieces")
+        }
+        return null
     }
 
     private fun describe(mv: JSONObject): String {
@@ -441,6 +484,9 @@ class MainActivity : Activity(), GameClient.Listener {
                 btnRoll.isEnabled = false
                 btnRec.isEnabled = false
                 btnPlay.isEnabled = false
+                canMoveNow = false
+                boardView.movable = emptySet()
+                tvHint.text = ""
                 wasMyRoll = false
                 dialog("Fin de la partida", "Ganó: " + (if (m.isNull("winner")) "nadie" else m.getString("winner")))
             }
@@ -511,11 +557,13 @@ class MainActivity : Activity(), GameClient.Listener {
         val total = m.getInt("log_total")
         val n = total - seen
         val lines = m.getJSONArray("log")
+        var freshRoll = false      // hubo un lanzamiento nuevo (de cualquier jugador): animar los dados
         if (n > 0) {
             for (i in maxOf(0, lines.length() - n) until lines.length()) {
                 val line = lines.getString(i)
                 log(line)
                 react(line)
+                if (n <= 3 && rollRegex.containsMatchIn(line)) freshRoll = true
             }
         }
         seen = total
@@ -524,6 +572,7 @@ class MainActivity : Activity(), GameClient.Listener {
         val phase = m.getString("phase")
         val mine = !m.getBoolean("over") && current == user
         val canMove = mine && phase == "move"
+        canMoveNow = canMove
         btnRoll.isEnabled = mine && phase == "roll"
         btnRec.isEnabled = canMove
         btnPlay.isEnabled = canMove
@@ -544,10 +593,36 @@ class MainActivity : Activity(), GameClient.Listener {
                     id = View.generateViewId()
                 })
             }
-            (movesGroup.getChildAt(0) as? RadioButton)?.isChecked = true
+        }
+
+        // fichas tocables (con la salida de cárcel valen todas las que están en la cárcel)
+        val movable = HashSet<Int>()
+        if (canMove) {
+            var hasExit = false
+            for (i in 0 until moves.length()) {
+                val mv = moves.getJSONObject(i)
+                movable.add(mv.getInt("piece"))
+                if (mv.getString("kind") == "exit") hasExit = true
+            }
+            val own = myPieces()
+            if (hasExit && own != null) for (s in 0 until own.length()) if (own.getInt(s) == Board.JAIL) movable.add(s)
+        }
+        boardView.movable = movable
+        tvHint.text = when {
+            canMove && m.optBoolean("special") -> "¡Tres pares! Toca la ficha que quieres sacar del juego"
+            canMove -> "👆 Toca una ficha resaltada para moverla"
+            mine && phase == "roll" -> "Lanza los dados"
+            else -> ""
         }
 
         val dice = m.optJSONArray("dice")
+        if (dice != null) {
+            val pend = m.optJSONArray("pending")
+            val pendList = ArrayList<Int>()
+            if (pend != null) for (i in 0 until pend.length()) pendList.add(pend.getInt(i))
+            if (freshRoll) diceView.roll(dice.getInt(0), dice.getInt(1), pendList)
+            else diceView.show(dice.getInt(0), dice.getInt(1), pendList)
+        }
         tvDice.text = if (dice != null) "Dados: ${dice.getInt(0)} + ${dice.getInt(1)}" else "Dados: -"
 
         val players = m.getJSONArray("players")
