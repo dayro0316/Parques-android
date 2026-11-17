@@ -41,6 +41,11 @@ class MainActivity : Activity(), GameClient.Listener {
     private var attempt = 0
     private val maxAttempts = 3
 
+    // Reconexión en partida: el servidor guarda el asiento ~60 s, así que reintentamos con las mismas credenciales.
+    private var lastCreds: Pair<String, String>? = null
+    private var reconnectTries = 0
+    private val maxReconnects = 15
+
     private val RULES = """
         • Juegan de 2 a 4 personas, cada una con 4 fichas de un color. Puedes completar la mesa con bots.
         • Lanza los dos dados: cada dado se usa por separado para mover una ficha.
@@ -246,6 +251,7 @@ class MainActivity : Activity(), GameClient.Listener {
         handler.removeCallbacksAndMessages(null)
         client.close()
         user = null
+        lastCreds = null
         state = null
         pending = null
         moves = JSONArray()
@@ -362,8 +368,19 @@ class MainActivity : Activity(), GameClient.Listener {
     override fun onClosed(reason: String) {
         runOnUiThread {
             if (isFinishing) return@runOnUiThread
-            if (user != null) {
-                // Se cayó la conexión durante la partida.
+            val creds = lastCreds
+            if (user != null && creds != null && reconnectTries < maxReconnects) {
+                reconnectTries += 1
+                toast("Conexión perdida; reconectando… ($reconnectTries/$maxReconnects)")
+                handler.postDelayed({
+                    if (user != null && !client.isOpen) {
+                        pending = Triple("login", creds.first, creds.second)
+                        attempt = 1
+                        sendAuth()
+                    }
+                }, 4000)
+            } else if (user != null) {
+                // Se cayó la conexión y no se pudo recuperar.
                 toast("Conexión cerrada: $reason")
                 user = null
                 state = null
@@ -393,7 +410,9 @@ class MainActivity : Activity(), GameClient.Listener {
                 user = m.getString("user")
                 pending?.let {
                     prefs.edit().putString("user", it.second).putString("pass", it.third).apply()
+                    lastCreds = it.second to it.third
                 }
+                reconnectTries = 0
                 pending = null
                 wasMyRoll = false
                 showGame()
