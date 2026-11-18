@@ -14,16 +14,17 @@ import android.text.InputFilter
 import android.text.InputType
 import android.text.TextWatcher
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.RadioButton
-import android.widget.RadioGroup
 import android.widget.ScrollView
+import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import org.json.JSONArray
@@ -92,7 +93,7 @@ class MainActivity : Activity(), GameClient.Listener {
             }
             val left = maxOf(0L, (turnDeadline - SystemClock.elapsedRealtime() + 999) / 1000)
             tvTimer.text = "⏱ $left s"
-            tvTimer.setTextColor(Color.parseColor(if (left <= 5) "#d50000" else "#5b2c13"))
+            tvTimer.setTextColor(Color.parseColor(if (left <= 5) "#d50000" else "#1E2A44"))
             handler.postDelayed(this, 250)
         }
     }
@@ -104,8 +105,19 @@ class MainActivity : Activity(), GameClient.Listener {
     private lateinit var tvLog: TextView
     private lateinit var btnRoll: Button
     private lateinit var btnRec: Button
-    private lateinit var btnPlay: Button
-    private lateinit var movesGroup: RadioGroup
+    private lateinit var movesBox: LinearLayout
+    private lateinit var chatBox: LinearLayout
+    private lateinit var chatScroll: ScrollView
+    private lateinit var spLevel: Spinner
+    private lateinit var tvRoom: TextView
+    private lateinit var btnLeave: Button
+    private var recIndex = -1
+    private var myColor = "red"
+    private var sessionToken = ""
+    private var roomName = "principal"
+    private var roomsRequested = false
+    private val levelKeys = listOf("easy", "normal", "hard")
+    private val levelEs = mapOf("easy" to "fácil", "normal" to "normal", "hard" to "difícil")
     private lateinit var etChat: EditText
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -113,8 +125,9 @@ class MainActivity : Activity(), GameClient.Listener {
         showLogin()
         // Si ya hay usuario guardado, entra solo.
         val u = prefs.getString("user", "") ?: ""
-        val p = prefs.getString("pass", "") ?: ""
-        if (u.isNotEmpty() && p.isNotEmpty()) startAuth("login", u, p)
+        val t = prefs.getString("token", "") ?: ""
+        prefs.edit().remove("pass").apply()     // versiones anteriores guardaban la clave: ya no
+        if (u.isNotEmpty() && t.isNotEmpty()) startAuth("resume_session", u, t)
     }
 
     override fun onDestroy() {
@@ -149,15 +162,25 @@ class MainActivity : Activity(), GameClient.Listener {
         setPadding(dp(10), dp(10), dp(10), dp(10))
     }
 
+    private fun icon(l: String) = when {
+        l.contains("ganó la partida") -> "🏆"
+        l.contains("regresa la ficha") -> "💥"
+        l.contains(" lanza ") -> "🎲"
+        l.contains("saca la ficha") -> "🔓"
+        l.contains("Tiempo agotado") -> "⏱"
+        l.contains("abandonó") || l.contains("se desconectó") -> "🚪"
+        else -> "•"
+    }
+
     private fun log(line: String) {
-        tvLog.append(line + "\n")
+        tvLog.append((if (line.startsWith("⚠") || line.startsWith("💡")) "" else icon(line) + " ") + line + "\n")
         if (tvLog.text.length > 6000) tvLog.text = tvLog.text.takeLast(4000)
     }
 
     // ---------------------------------------------------------------- pantalla de login
     private fun showLogin() {
-        val brown = Color.parseColor("#5B2C13")
-        val cream = Color.parseColor("#FDF3D0")
+        val brown = Color.parseColor("#1E2A44")
+        val cream = Color.parseColor("#EEF2FA")
         val root = column().apply {
             gravity = Gravity.CENTER_HORIZONTAL
             setPadding(dp(24), dp(32), dp(24), dp(24))
@@ -176,7 +199,7 @@ class MainActivity : Activity(), GameClient.Listener {
         root.addView(TextView(this).apply {
             text = "Juega con tus amigos desde cualquier lugar"
             textSize = 14f
-            setTextColor(Color.parseColor("#6D5A4A"))
+            setTextColor(Color.parseColor("#5B6780"))
             gravity = Gravity.CENTER
             setPadding(0, dp(2), 0, dp(10))
         })
@@ -191,7 +214,7 @@ class MainActivity : Activity(), GameClient.Listener {
         // ---- Campos ----
         var mode = "login"
         val nameRe = Regex("^[A-Za-z0-9_]{3,16}$")
-        val grayText = Color.parseColor("#6D5A4A")
+        val grayText = Color.parseColor("#5B6780")
 
         val etUser = EditText(this).apply {
             hint = "3-16 letras, números o _"
@@ -203,14 +226,13 @@ class MainActivity : Activity(), GameClient.Listener {
             hint = "Clave"
             setSingleLine()
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-            setText(prefs.getString("pass", ""))
         }
         val etPass2 = EditText(this).apply {
             hint = "Repite la clave"
             setSingleLine()
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
         }
-        fun hintView() = TextView(this).apply { textSize = 12f; setTextColor(Color.parseColor("#8A7A6A")) }
+        fun hintView() = TextView(this).apply { textSize = 12f; setTextColor(Color.parseColor("#7B8799")) }
         val hUser = hintView()
         val hPass = hintView()
         val hPass2 = hintView()
@@ -265,7 +287,7 @@ class MainActivity : Activity(), GameClient.Listener {
         // ---- Validación mientras se escribe (mismas reglas del servidor) ----
         fun setHint(h: TextView, msg: String, kind: Int) {   // kind: 0 neutro, 1 error, 2 correcto
             h.text = msg
-            h.setTextColor(Color.parseColor(when (kind) { 1 -> "#C62828"; 2 -> "#0A7D0A"; else -> "#8A7A6A" }))
+            h.setTextColor(Color.parseColor(when (kind) { 1 -> "#C62828"; 2 -> "#0A7D0A"; else -> "#7B8799" }))
         }
         fun validate(): Boolean {
             val u = etUser.text.toString()
@@ -321,7 +343,7 @@ class MainActivity : Activity(), GameClient.Listener {
             setPadding(dp(4), dp(4), dp(4), dp(4))
             background = GradientDrawable().apply {
                 cornerRadius = dp(12).toFloat()
-                setColor(Color.parseColor("#F1E6D3"))
+                setColor(Color.parseColor("#DDE4F2"))
             }
             addView(tabLogin, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             addView(tabReg, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
@@ -395,7 +417,7 @@ class MainActivity : Activity(), GameClient.Listener {
         loginStatus?.let {
             it.visibility = if (busy) View.VISIBLE else View.GONE
             it.text = msg ?: ""
-            it.setTextColor(Color.parseColor("#5B2C13"))
+            it.setTextColor(Color.parseColor("#1E2A44"))
         }
         btnLogin?.isEnabled = !busy
         btnRegister?.isEnabled = !busy
@@ -417,7 +439,10 @@ class MainActivity : Activity(), GameClient.Listener {
 
     private fun sendAuth() {
         val (kind, u, p) = pending ?: return
-        val send = { client.send(kind, "user" to u, "password" to p) }
+        val send = {
+            if (kind == "resume_session") client.send(kind, "user" to u, "token" to p)
+            else client.send(kind, "user" to u, "password" to p)
+        }
         if (client.isOpen) {
             send()
             return
@@ -432,6 +457,8 @@ class MainActivity : Activity(), GameClient.Listener {
     }
 
     private fun logout() {
+        if (sessionToken.isNotEmpty()) client.send("logout", "token" to sessionToken)
+        sessionToken = ""
         prefs.edit().clear().apply()
         handler.removeCallbacksAndMessages(null)
         client.close()
@@ -462,7 +489,8 @@ class MainActivity : Activity(), GameClient.Listener {
         root.addView(tvSync)
 
         // Sala
-        root.addView(TextView(this).apply { text = "Sala"; textSize = 16f; setTypeface(null, Typeface.BOLD) })
+        tvRoom = TextView(this).apply { text = "🏠 $roomName"; textSize = 16f; setTypeface(null, Typeface.BOLD) }
+        root.addView(row(tvRoom, button("🏠 Cambiar de sala") { roomsRequested = true; client.send("rooms") }))
         val first = Board.COLORS.take(2)
         val second = Board.COLORS.drop(2)
         for (group in listOf(first, second)) {
@@ -470,7 +498,16 @@ class MainActivity : Activity(), GameClient.Listener {
                 button("Unirse: ${Board.ES.getValue(c)}") { client.send("join", "color" to c) }
             }.toTypedArray()))
         }
-        root.addView(row(button("+ Bot") { client.send("add_bot") }, button("Listo") { client.send("ready") }))
+        spLevel = Spinner(this).apply {
+            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item,
+                levelKeys.map { "🤖 " + levelEs.getValue(it) })
+            setSelection(1)
+        }
+        root.addView(row(
+            spLevel,
+            button("+ Bot") { client.send("add_bot", "level" to levelKeys[spLevel.selectedItemPosition]) },
+            button("Listo") { client.send("ready") }
+        ))
         tvLobby = TextView(this).apply { text = "Sala vacía" }
         root.addView(tvLobby)
 
@@ -498,15 +535,10 @@ class MainActivity : Activity(), GameClient.Listener {
         btnRoll = button("Lanzar dados") { client.send("roll") }.apply { isEnabled = false }
         btnRec = button("Recomendar") { client.send("recommend") }.apply { isEnabled = false }
         root.addView(row(btnRoll, btnRec))
-        movesGroup = RadioGroup(this)
-        movesGroup.setOnCheckedChangeListener { group, checkedId ->
-            val rb = group.findViewById<RadioButton>(checkedId)
-            boardView.selected = if (rb != null) moves.getJSONObject(rb.tag as Int) else null
-        }
-        movesGroup.visibility = View.GONE      // las jugadas se hacen tocando la ficha en el tablero
-        root.addView(movesGroup)
-        btnPlay = button("Jugar seleccionada") { play() }.apply { isEnabled = false; visibility = View.GONE }
-        root.addView(btnPlay)
+        root.addView(TextView(this).apply { text = "Jugadas posibles"; textSize = 14f; setTypeface(null, Typeface.BOLD); setPadding(0, dp(8), 0, dp(2)) })
+        movesBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        root.addView(movesBox, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        renderMoves(false)
 
         // Estadísticas
         root.addView(row(
@@ -515,16 +547,29 @@ class MainActivity : Activity(), GameClient.Listener {
             button("Historial") { client.send("history") }
         ))
 
-        // Registro y chat
-        tvLog = TextView(this).apply { typeface = Typeface.MONOSPACE; textSize = 11f }
-        root.addView(tvLog)
-        etChat = EditText(this).apply { hint = "Chat..." }
+        // Chat en nubes (panel aparte del registro de la partida)
+        root.addView(TextView(this).apply { text = "☁️ Chat"; textSize = 16f; setTypeface(null, Typeface.BOLD); setPadding(0, dp(10), 0, dp(2)) })
+        chatBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(6), dp(6), dp(6), dp(6)) }
+        chatScroll = ScrollView(this).apply {
+            background = GradientDrawable().apply { cornerRadius = dp(14).toFloat(); setColor(Color.parseColor("#E3EAF7")) }
+            setOnTouchListener { v, _ -> v.parent.requestDisallowInterceptTouchEvent(true); false }
+            addView(chatBox)
+        }
+        root.addView(chatScroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(220)))
+        etChat = EditText(this).apply { hint = "Escribe un mensaje…"; setSingleLine() }
         root.addView(row(etChat, button("Enviar") { sendChat() }))
 
-        // Cerrar sesión (borra el usuario guardado)
+        // Historial de la partida
+        root.addView(TextView(this).apply { text = "📜 Historial"; textSize = 14f; setTypeface(null, Typeface.BOLD); setPadding(0, dp(10), 0, 0) })
+        tvLog = TextView(this).apply { textSize = 12f }
+        root.addView(tvLog)
+
+        btnLeave = button("🚪 Salir de la partida") { askLeave() }.apply { visibility = View.GONE }
+        root.addView(btnLeave)
+        // Cerrar sesión (borra el usuario y el token guardados)
         root.addView(button("Cerrar sesión") { logout() })
 
-        setContentView(ScrollView(this).apply { addView(root) })
+        setContentView(ScrollView(this).apply { setBackgroundColor(Color.parseColor("#EEF2FA")); addView(root) })
     }
 
     private fun sendChat() {
@@ -535,12 +580,132 @@ class MainActivity : Activity(), GameClient.Listener {
         }
     }
 
-    private fun play() {
-        val id = movesGroup.checkedRadioButtonId
-        if (id != -1) {
-            val idx = movesGroup.findViewById<RadioButton>(id).tag as Int
-            client.send("move", "index" to idx)
+    private fun roundBg(fill: String, stroke: String? = null, r: Int = 12) = GradientDrawable().apply {
+        cornerRadius = dp(r).toFloat()
+        setColor(Color.parseColor(fill))
+        if (stroke != null) setStroke(dp(2), Color.parseColor(stroke))
+    }
+
+    /** Lista visible de jugadas: cada una es una tarjeta; al presionarla se resalta la ficha en el tablero. */
+    private fun renderMoves(canMove: Boolean) {
+        movesBox.removeAllViews()
+        if (!canMove) {
+            movesBox.addView(TextView(this).apply { text = "Aquí verás tus jugadas cuando lances los dados"; textSize = 12f; setTextColor(Color.parseColor("#7B8799")) })
+            return
         }
+        for (i in 0 until moves.length()) {
+            val mv = moves.getJSONObject(i)
+            val rec = i == recIndex
+            val b = Button(this).apply {
+                text = describe(mv) + if (rec) "   💡 recomendada" else ""
+                isAllCaps = false
+                textSize = 14f
+                gravity = Gravity.START or Gravity.CENTER_VERTICAL
+                setTextColor(Color.parseColor("#1E2A44"))
+                background = roundBg(if (rec) "#E4F7E9" else "#FFFFFF", if (rec) "#00C853" else "#C9D3E6")
+                setOnClickListener { if (canMoveNow) client.send("move", "index" to i) }
+                setOnTouchListener { _, ev ->
+                    when (ev.action) {
+                        MotionEvent.ACTION_DOWN -> boardView.selected = mv
+                        MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> boardView.selected = null
+                    }
+                    false
+                }
+            }
+            movesBox.addView(b, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(4) })
+        }
+    }
+
+    /** Burbuja de chat con forma de nube: redondeada, con color según quién habla. */
+    private fun addChat(who: String, text: String) {
+        val me = who == user
+        val bot = who.startsWith("Bot-")
+        val fill = when {
+            me -> "#CFE3FF"
+            bot -> Board.HEX[who.removePrefix("Bot-")]?.let { blend(it) } ?: "#FFFFFF"
+            else -> "#FFFFFF"
+        }
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        col.addView(TextView(this).apply {
+            this.text = (if (bot) "🤖 " else "") + who
+            textSize = 10f
+            setTextColor(Color.parseColor("#5B6780"))
+            gravity = if (me) Gravity.END else Gravity.START
+            setPadding(dp(8), 0, dp(8), 0)
+        })
+        col.addView(TextView(this).apply {
+            this.text = text
+            textSize = 14f
+            setTextColor(Color.parseColor("#1E2A44"))
+            background = roundBg(fill, null, 20)
+            setPadding(dp(14), dp(8), dp(14), dp(8))
+        })
+        chatBox.addView(col, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            gravity = if (me) Gravity.END else Gravity.START
+            topMargin = dp(4)
+        })
+        while (chatBox.childCount > 60) chatBox.removeViewAt(0)
+        chatScroll.post { chatScroll.fullScroll(View.FOCUS_DOWN) }
+    }
+
+    /** Mezcla un color #rrggbb con blanco para el fondo pastel de las burbujas de los bots. */
+    private fun blend(hex: String): String {
+        val c = Color.parseColor(hex)
+        fun mix(v: Int) = (v * 0.25 + 255 * 0.75).toInt()
+        return String.format("#%02X%02X%02X", mix(Color.red(c)), mix(Color.green(c)), mix(Color.blue(c)))
+    }
+
+    private fun askLeave() {
+        AlertDialog.Builder(this)
+            .setTitle("🚪 ¿Salir de la partida?")
+            .setMessage("Perderás tu lugar y no podrás volver a esta partida.")
+            .setPositiveButton("Salir") { _, _ -> client.send("leave_game") }
+            .setNegativeButton("Seguir jugando", null).show()
+    }
+
+    private fun resetGameUi() {
+        state = null
+        moves = JSONArray()
+        seen = 0
+        boardView.state = null
+        boardView.movable = emptySet()
+        boardView.selected = null
+        btnRoll.isEnabled = false
+        btnRec.isEnabled = false
+        btnLeave.visibility = View.GONE
+        canMoveNow = false
+        tvHint.text = ""
+        turnDeadline = 0L
+        tvTimer.text = ""
+        tvPlayers.text = ""
+        wasMyRoll = false
+        recIndex = -1
+        renderMoves(false)
+    }
+
+    private fun showRooms(m: JSONObject) {
+        val rows = m.getJSONArray("rows")
+        val names = ArrayList<String>()
+        val labels = ArrayList<CharSequence>()
+        for (i in 0 until rows.length()) {
+            val r = rows.getJSONObject(i)
+            names.add(r.getString("name"))
+            labels.add("${r.getString("name")}  ·  👥 ${r.getInt("online")}  ·  " +
+                (if (r.getBoolean("playing")) "en juego" else "abierta") +
+                (if (r.getString("name") == roomName) "  (aquí)" else ""))
+        }
+        AlertDialog.Builder(this)
+            .setTitle("🏠 Salas")
+            .setItems(labels.toTypedArray()) { _, which -> client.send("change_room", "name" to names[which]) }
+            .setPositiveButton("Crear sala") { _, _ ->
+                val et = EditText(this).apply { hint = "Nombre (2-16 letras, números o _)"; setSingleLine(); filters = arrayOf(InputFilter.LengthFilter(16)) }
+                AlertDialog.Builder(this).setTitle("Nueva sala").setView(et)
+                    .setPositiveButton("Entrar") { _, _ ->
+                        val n = et.text.toString().trim()
+                        if (n.isNotEmpty()) client.send("change_room", "name" to n)
+                    }.setNegativeButton("Cancelar", null).show()
+            }
+            .setNegativeButton("Cerrar", null).show()
     }
 
     /**
@@ -605,7 +770,7 @@ class MainActivity : Activity(), GameClient.Listener {
                 toast("Conexión perdida; reconectando… ($reconnectTries/$maxReconnects)")
                 handler.postDelayed({
                     if (user != null && !client.isOpen) {
-                        pending = Triple("login", creds.first, creds.second)
+                        pending = Triple("resume_session", creds.first, creds.second)
                         attempt = 1
                         sendAuth()
                     }
@@ -639,16 +804,38 @@ class MainActivity : Activity(), GameClient.Listener {
         when (m.optString("type")) {
             "auth_ok" -> {
                 user = m.getString("user")
-                pending?.let {
-                    if (remember) prefs.edit().putString("user", it.second).putString("pass", it.third).apply()
-                    else prefs.edit().clear().apply()
-                    lastCreds = it.second to it.third
-                }
+                val pd = pending
+                val tk = m.optString("token", "").ifEmpty { if (pd?.first == "resume_session") pd.third else sessionToken }
+                sessionToken = tk
+                if (remember && tk.isNotEmpty()) prefs.edit().putString("user", user).putString("token", tk).apply()
+                else prefs.edit().clear().apply()
+                lastCreds = (user ?: "") to tk
+                roomName = m.optString("room", roomName)
                 reconnectTries = 0
                 pending = null
                 wasMyRoll = false
                 showGame()
             }
+            "session_expired" -> {
+                prefs.edit().remove("token").apply()
+                val wasIn = user != null
+                pending = null
+                sessionToken = ""
+                lastCreds = null
+                if (wasIn) { user = null; state = null; client.close(); showLogin() }
+                setBusy(false, null)
+                toast("Tu sesión venció: inicia sesión de nuevo")
+            }
+            "rooms" -> if (user != null && roomsRequested) { roomsRequested = false; showRooms(m) }
+            "room_changed" -> if (user != null) {
+                roomName = m.getString("room")
+                resetGameUi()
+                tvLog.text = ""
+                chatBox.removeAllViews()
+                tvRoom.text = "🏠 $roomName"
+                toast("Estás en la sala «$roomName»")
+            }
+            "left_game" -> if (user != null) { resetGameUi(); toast("Saliste de la partida") }
             "registered" -> {
                 // registrarse no inicia sesión: el usuario debe pulsar «Ingresar»
                 pending = null
@@ -675,24 +862,21 @@ class MainActivity : Activity(), GameClient.Listener {
             }
             "state" -> if (user != null) onState(m)
             "game_over" -> if (user != null) {
-                state = null
-                boardView.state = null
-                btnRoll.isEnabled = false
-                btnRec.isEnabled = false
-                btnPlay.isEnabled = false
-                canMoveNow = false
-                boardView.movable = emptySet()
-                tvHint.text = ""
-                turnDeadline = 0L
-                tvTimer.text = ""
-                wasMyRoll = false
-                dialog("Fin de la partida", "Ganó: " + (if (m.isNull("winner")) "nadie" else m.getString("winner")))
+                val winner = if (m.isNull("winner")) "nadie" else m.getString("winner")
+                resetGameUi()
+                AlertDialog.Builder(this)
+                    .setTitle(if (winner == user) "🏆 ¡Ganaste!" else "🎉 Fin de la partida")
+                    .setMessage(if (winner == user) "¡Felicitaciones! ¿Otra partida?" else "Ganó: $winner\n¿Otra partida?")
+                    .setPositiveButton("🔁 Jugar otra vez") { _, _ -> client.send("join", "color" to myColor) }
+                    .setNeutralButton("🏆 Ranking") { _, _ -> client.send("stats_top") }
+                    .setNegativeButton("Cerrar", null).show()
             }
             "recommendation" -> if (user != null) {
                 log("💡 " + m.getString("why"))
-                (movesGroup.getChildAt(m.getInt("move")) as? RadioButton)?.isChecked = true
+                recIndex = m.getInt("move")
+                renderMoves(canMoveNow)
             }
-            "chat" -> if (user != null) log("💬 ${m.getString("user")}: ${m.getString("text")}")
+            "chat" -> if (user != null) addChat(m.getString("user"), m.getString("text"))
             "stats_top" -> if (user != null) {
                 val rows = m.getJSONArray("rows")
                 val sb = StringBuilder()
@@ -723,11 +907,14 @@ class MainActivity : Activity(), GameClient.Listener {
     private fun onLobby(m: JSONObject) {
         val seats = m.getJSONObject("seats")
         val lines = ArrayList<String>()
+        if (m.has("room")) { roomName = m.getString("room"); tvRoom.text = "🏠 $roomName" }
         for (c in seats.keys()) {
             val s = seats.getJSONObject(c)
+            if (s.getString("name") == user) myColor = c
             lines.add(
                 "${Board.ES[c] ?: c}: ${s.getString("name")}" +
-                    (if (s.getBoolean("bot")) " (bot)" else "") + (if (s.getBoolean("ready")) " ✔" else "")
+                    (if (s.getBoolean("bot")) " 🤖 ${levelEs[s.optString("level", "normal")] ?: "normal"}" else "") +
+                    (if (s.getBoolean("ready")) " ✔" else "")
             )
         }
         if (m.getBoolean("playing")) lines.add("— partida en curso, ingreso bloqueado —")
@@ -773,7 +960,6 @@ class MainActivity : Activity(), GameClient.Listener {
         canMoveNow = canMove
         btnRoll.isEnabled = mine && phase == "roll"
         btnRec.isEnabled = canMove
-        btnPlay.isEnabled = canMove
 
         // Aviso cuando pasa a ser tu turno de lanzar
         val myRoll = mine && phase == "roll"
@@ -781,17 +967,12 @@ class MainActivity : Activity(), GameClient.Listener {
         wasMyRoll = myRoll
 
         moves = m.getJSONArray("moves")
-        movesGroup.removeAllViews()
         boardView.selected = null
-        if (canMove) {
-            for (i in 0 until moves.length()) {
-                movesGroup.addView(RadioButton(this).apply {
-                    text = describe(moves.getJSONObject(i))
-                    tag = i
-                    id = View.generateViewId()
-                })
-            }
-        }
+        recIndex = -1
+        renderMoves(canMove)
+        val meP = myPieces()
+        val inGame = !m.getBoolean("over") && meP != null
+        btnLeave.visibility = if (inGame) View.VISIBLE else View.GONE
 
         // fichas tocables (con la salida de cárcel valen todas las que están en la cárcel)
         val movable = HashSet<Int>()
@@ -808,7 +989,7 @@ class MainActivity : Activity(), GameClient.Listener {
         boardView.movable = movable
         tvHint.text = when {
             canMove && m.optBoolean("special") -> "¡Tres pares! Toca la ficha que quieres sacar del juego"
-            canMove -> "👆 Toca una ficha resaltada para moverla"
+            canMove -> "👆 Toca una ficha resaltada, o elige una jugada de la lista"
             mine && phase == "roll" -> "Lanza los dados"
             else -> ""
         }
