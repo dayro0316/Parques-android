@@ -4,15 +4,20 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.graphics.Color
 import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.text.Editable
+import android.text.InputFilter
 import android.text.InputType
+import android.text.TextWatcher
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -64,6 +69,12 @@ class MainActivity : Activity(), GameClient.Listener {
     private var loginStatus: TextView? = null
     private var btnLogin: Button? = null
     private var btnRegister: Button? = null
+    private var onRegistered: (() -> Unit)? = null     // la pantalla de inicio vuelve a «Ingresar» tras crear la cuenta
+    private var remember = true                         // «Recordarme en este teléfono»
+    private val friendly = mapOf(
+        "Ese usuario ya existe" to "Ese usuario ya existe. Prueba con otro, o usa «Ingresar» si ya tienes cuenta.",
+        "Usuario o clave incorrectos" to "Usuario o clave incorrectos. Revisa que estés en «Ingresar» y no en «Crear cuenta»."
+    )
 
     private lateinit var boardView: BoardView
     private lateinit var tvLobby: TextView
@@ -177,10 +188,15 @@ class MainActivity : Activity(), GameClient.Listener {
         }
         root.addView(stripe, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(6)))
 
-        // Datos de acceso
+        // ---- Campos ----
+        var mode = "login"
+        val nameRe = Regex("^[A-Za-z0-9_]{3,16}$")
+        val grayText = Color.parseColor("#6D5A4A")
+
         val etUser = EditText(this).apply {
-            hint = "Usuario"
+            hint = "3-16 letras, números o _"
             setSingleLine()
+            filters = arrayOf(InputFilter.LengthFilter(16))
             setText(prefs.getString("user", ""))
         }
         val etPass = EditText(this).apply {
@@ -189,21 +205,155 @@ class MainActivity : Activity(), GameClient.Listener {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
             setText(prefs.getString("pass", ""))
         }
-        root.addView(etUser, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        root.addView(etPass, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        val etPass2 = EditText(this).apply {
+            hint = "Repite la clave"
+            setSingleLine()
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
+        fun hintView() = TextView(this).apply { textSize = 12f; setTextColor(Color.parseColor("#8A7A6A")) }
+        val hUser = hintView()
+        val hPass = hintView()
+        val hPass2 = hintView()
 
-        val bLogin = button("Ingresar") {
-            startAuth("login", etUser.text.toString().trim(), etPass.text.toString())
+        // Clave con «ojo» para mostrarla u ocultarla
+        fun passRow(et: EditText): LinearLayout {
+            val eye = TextView(this).apply {
+                text = "👁"
+                textSize = 20f
+                gravity = Gravity.CENTER
+                setPadding(dp(10), 0, dp(6), 0)
+            }
+            var shown = false
+            eye.setOnClickListener {
+                shown = !shown
+                et.inputType = InputType.TYPE_CLASS_TEXT or
+                    (if (shown) InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD else InputType.TYPE_TEXT_VARIATION_PASSWORD)
+                et.setSelection(et.text.length)
+                eye.text = if (shown) "🙈" else "👁"
+            }
+            return LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(et, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                addView(eye, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            }
+        }
+
+        fun field(label: String, input: View, hint: TextView) = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(6), 0, 0)
+            addView(TextView(this@MainActivity).apply {
+                text = label
+                textSize = 12f
+                setTypeface(null, Typeface.BOLD)
+                setTextColor(grayText)
+            })
+            addView(input, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            addView(hint, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
+        val userField = field("Usuario", etUser, hUser)
+        val passField = field("Clave", passRow(etPass), hPass)
+        val confirmField = field("Repite la clave", passRow(etPass2), hPass2).apply { visibility = View.GONE }
+
+        val cbRemember = CheckBox(this).apply {
+            text = "Recordarme en este teléfono"
+            isChecked = true
+            textSize = 13f
+            setTextColor(grayText)
+        }
+
+        // ---- Validación mientras se escribe (mismas reglas del servidor) ----
+        fun setHint(h: TextView, msg: String, kind: Int) {   // kind: 0 neutro, 1 error, 2 correcto
+            h.text = msg
+            h.setTextColor(Color.parseColor(when (kind) { 1 -> "#C62828"; 2 -> "#0A7D0A"; else -> "#8A7A6A" }))
+        }
+        fun validate(): Boolean {
+            val u = etUser.text.toString()
+            val p = etPass.text.toString()
+            val p2 = etPass2.text.toString()
+            val reg = mode == "register"
+            var ok = true
+            val uBad = u.isNotEmpty() && !nameRe.matches(u)
+            setHint(hUser, if (uBad) "Usa 3-16 letras, números o _ (sin espacios)" else "", 1)
+            if (u.isEmpty() || uBad) ok = false
+            if (reg) {
+                val short = p.isNotEmpty() && p.length < 4
+                setHint(hPass, if (short) "Mínimo 4 caracteres" else if (p.isNotEmpty()) "✔ Clave válida" else "", if (short) 1 else 2)
+                if (p.isEmpty() || short) ok = false
+                val diff = p2.isNotEmpty() && p2 != p
+                setHint(hPass2, if (diff) "Las claves no coinciden" else if (p2.isNotEmpty()) "✔ Coinciden" else "", if (diff) 1 else 2)
+                if (p2.isEmpty() || diff) ok = false
+            } else {
+                setHint(hPass, "", 0)
+                setHint(hPass2, "", 0)
+                if (p.isEmpty()) ok = false
+            }
+            return ok
+        }
+        val watcher = object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: Editable?) { validate() }
+        }
+        etUser.addTextChangedListener(watcher)
+        etPass.addTextChangedListener(watcher)
+        etPass2.addTextChangedListener(watcher)
+
+        // ---- Botón principal ----
+        val bGo = button("Ingresar") {
+            if (!validate()) {
+                toast(if (mode == "register") "Revisa los campos marcados" else "Escribe tu usuario y clave")
+                return@button
+            }
+            remember = cbRemember.isChecked
+            startAuth(mode, etUser.text.toString().trim(), etPass.text.toString())
         }.apply {
             setBackgroundColor(Color.parseColor("#0A7D0A"))
             setTextColor(Color.WHITE)
             setTypeface(null, Typeface.BOLD)
         }
-        val bRegister = button("Crear cuenta") {
-            startAuth("register", etUser.text.toString().trim(), etPass.text.toString())
+
+        // ---- Pestañas «Ingresar» / «Crear cuenta» ----
+        val tabLogin = Button(this).apply { text = "Ingresar"; isAllCaps = false }
+        val tabReg = Button(this).apply { text = "Crear cuenta"; isAllCaps = false }
+        val tabs = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(dp(4), dp(4), dp(4), dp(4))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(12).toFloat()
+                setColor(Color.parseColor("#F1E6D3"))
+            }
+            addView(tabLogin, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            addView(tabReg, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         }
-        root.addView(bLogin, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        root.addView(bRegister, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        fun styleTab(b: Button, active: Boolean) {
+            b.background = GradientDrawable().apply {
+                cornerRadius = dp(9).toFloat()
+                setColor(if (active) Color.WHITE else Color.TRANSPARENT)
+            }
+            b.setTextColor(if (active) brown else grayText)
+            b.setTypeface(null, if (active) Typeface.BOLD else Typeface.NORMAL)
+        }
+        fun setMode(m: String) {
+            mode = m
+            val reg = m == "register"
+            styleTab(tabLogin, !reg)
+            styleTab(tabReg, reg)
+            confirmField.visibility = if (reg) View.VISIBLE else View.GONE
+            bGo.text = if (reg) "Crear cuenta" else "Ingresar"
+            loginStatus?.visibility = View.GONE
+            validate()
+        }
+        tabLogin.setOnClickListener { setMode("login") }
+        tabReg.setOnClickListener { setMode("register") }
+
+        val full = { LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT) }
+        root.addView(tabs, full())
+        root.addView(userField, full())
+        root.addView(passField, full())
+        root.addView(confirmField, full())
+        root.addView(cbRemember, full())
+        root.addView(bGo, full())
 
         // Estado de la conexión (Conectando…, Reintentando…)
         val status = TextView(this).apply {
@@ -218,8 +368,21 @@ class MainActivity : Activity(), GameClient.Listener {
         root.addView(button("Cómo se juega") { dialog("Cómo se juega", RULES) })
 
         loginStatus = status
-        btnLogin = bLogin
-        btnRegister = bRegister
+        btnLogin = bGo
+        btnRegister = tabReg
+        setMode("login")
+        // Registrarse no inicia sesión: se vuelve a «Ingresar» con el usuario ya escrito
+        onRegistered = {
+            setMode("login")
+            etPass.setText("")
+            etPass2.setText("")
+            loginStatus?.let {
+                it.visibility = View.VISIBLE
+                it.text = "✔ Cuenta creada. Ahora inicia sesión con tu clave."
+                it.setTextColor(Color.parseColor("#0A7D0A"))
+            }
+            etPass.requestFocus()
+        }
         setContentView(ScrollView(this).apply {
             isFillViewport = true
             setBackgroundColor(cream)
@@ -232,6 +395,7 @@ class MainActivity : Activity(), GameClient.Listener {
         loginStatus?.let {
             it.visibility = if (busy) View.VISIBLE else View.GONE
             it.text = msg ?: ""
+            it.setTextColor(Color.parseColor("#5B2C13"))
         }
         btnLogin?.isEnabled = !busy
         btnRegister?.isEnabled = !busy
@@ -285,6 +449,7 @@ class MainActivity : Activity(), GameClient.Listener {
         loginStatus = null
         btnLogin = null
         btnRegister = null
+        onRegistered = null
 
         val root = column()
 
@@ -475,7 +640,8 @@ class MainActivity : Activity(), GameClient.Listener {
             "auth_ok" -> {
                 user = m.getString("user")
                 pending?.let {
-                    prefs.edit().putString("user", it.second).putString("pass", it.third).apply()
+                    if (remember) prefs.edit().putString("user", it.second).putString("pass", it.third).apply()
+                    else prefs.edit().clear().apply()
                     lastCreds = it.second to it.third
                 }
                 reconnectTries = 0
@@ -483,8 +649,15 @@ class MainActivity : Activity(), GameClient.Listener {
                 wasMyRoll = false
                 showGame()
             }
+            "registered" -> {
+                // registrarse no inicia sesión: el usuario debe pulsar «Ingresar»
+                pending = null
+                setBusy(false, null)
+                onRegistered?.invoke()
+            }
             "error" -> if (user == null) {
-                toast(m.optString("message"))
+                val raw = m.optString("message")
+                toast(friendly[raw] ?: raw)
                 pending = null
                 setBusy(false, null)
             } else {
