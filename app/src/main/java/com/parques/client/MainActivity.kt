@@ -447,12 +447,12 @@ class MainActivity : Activity(), GameClient.Listener {
             send()
             return
         }
-        val msg = if (attempt == 1) {
-            "Conectando con el servidor…\n(si estaba dormido puede tardar hasta 1 minuto)"
-        } else {
-            "Reintentando… ($attempt/$maxAttempts)\n(el servidor se está despertando)"
-        }
+        val msg = if (attempt == 1) "🎲 Preparando la mesa…" else "Reintentando… ($attempt/$maxAttempts)"
         setBusy(true, msg)
+        val mine = attempt
+        handler.postDelayed({
+            if (pending != null && user == null && attempt == mine && !client.isOpen) setBusy(true, "Ya casi, acomodando las fichas…")
+        }, 6000)
         client.connect(GameClient.normalizeUrl(Config.SERVER_URL)) { send() }
     }
 
@@ -787,7 +787,7 @@ class MainActivity : Activity(), GameClient.Listener {
                 // Falló al conectar: reintenta (Render puede estar despertando).
                 if (attempt < maxAttempts) {
                     attempt += 1
-                    setBusy(true, "Reintentando… ($attempt/$maxAttempts)\n(el servidor se está despertando)")
+                    setBusy(true, "Reintentando… ($attempt/$maxAttempts)")
                     handler.postDelayed({
                         if (pending != null && user == null) sendAuth()
                     }, 3000)
