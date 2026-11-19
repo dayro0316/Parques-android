@@ -2,6 +2,7 @@ package com.parques.client
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -116,7 +117,12 @@ class MainActivity : Activity(), GameClient.Listener {
     private var myColor = "red"
     private var sessionToken = ""
     private var roomName = "principal"
-    private var roomsRequested = false
+    private var roomPrivate = false
+    private var hostName = ""
+    private var botColors: List<String> = emptyList()
+    private lateinit var btnAddBot: Button
+    private lateinit var btnRemoveBot: Button
+    private lateinit var btnShare: Button
     private val levelKeys = listOf("easy", "normal", "hard")
     private val levelEs = mapOf("easy" to "fácil", "normal" to "normal", "hard" to "difícil")
     private lateinit var etChat: EditText
@@ -491,8 +497,8 @@ class MainActivity : Activity(), GameClient.Listener {
         root.addView(tvSync)
 
         // Sala
-        tvRoom = TextView(this).apply { text = "🏠 $roomName"; textSize = 16f; setTypeface(null, Typeface.BOLD) }
-        root.addView(row(tvRoom, button("🏠 Cambiar de sala") { roomsRequested = true; client.send("rooms") }))
+        tvRoom = TextView(this).apply { text = roomLabel(); textSize = 16f; setTypeface(null, Typeface.BOLD) }
+        root.addView(row(tvRoom, button("🏠 Jugar / salas") { showPlayMenu() }))
         val first = Board.COLORS.take(2)
         val second = Board.COLORS.drop(2)
         for (group in listOf(first, second)) {
@@ -505,11 +511,11 @@ class MainActivity : Activity(), GameClient.Listener {
                 levelKeys.map { "🤖 " + levelEs.getValue(it) })
             setSelection(1)
         }
-        root.addView(row(
-            spLevel,
-            button("+ Bot") { client.send("add_bot", "level" to levelKeys[spLevel.selectedItemPosition]) },
-            button("Listo") { client.send("ready") }
-        ))
+        btnAddBot = button("+ Bot") { client.send("add_bot", "level" to levelKeys[spLevel.selectedItemPosition]) }
+        root.addView(row(spLevel, btnAddBot, button("Listo") { client.send("ready") }))
+        btnRemoveBot = button("✕ Quitar bot") { showRemoveBot() }.apply { visibility = View.GONE }
+        btnShare = button("🔗 Compartir código") { shareRoom() }.apply { visibility = View.GONE }
+        root.addView(row(btnRemoveBot, btnShare))
         tvLobby = TextView(this).apply { text = "Sala vacía" }
         root.addView(tvLobby)
 
@@ -685,29 +691,56 @@ class MainActivity : Activity(), GameClient.Listener {
         renderMoves(false)
     }
 
-    private fun showRooms(m: JSONObject) {
-        val rows = m.getJSONArray("rows")
-        val names = ArrayList<String>()
-        val labels = ArrayList<CharSequence>()
-        for (i in 0 until rows.length()) {
-            val r = rows.getJSONObject(i)
-            names.add(r.getString("name"))
-            labels.add("${r.getString("name")}  ·  👥 ${r.getInt("online")}  ·  " +
-                (if (r.getBoolean("playing")) "en juego" else "abierta") +
-                (if (r.getString("name") == roomName) "  (aquí)" else ""))
-        }
+    private fun roomLabel() = if (roomPrivate) "🔒 Sala $roomName" else "🏠 Jugar rápido"
+
+    /** Jugar rápido (sala pública), crear una sala privada con código, o entrar a una con código. */
+    private fun showPlayMenu() {
         AlertDialog.Builder(this)
-            .setTitle("🏠 Salas")
-            .setItems(labels.toTypedArray()) { _, which -> client.send("change_room", "name" to names[which]) }
-            .setPositiveButton("Crear sala") { _, _ ->
-                val et = EditText(this).apply { hint = "Nombre (2-16 letras, números o _)"; setSingleLine(); filters = arrayOf(InputFilter.LengthFilter(16)) }
-                AlertDialog.Builder(this).setTitle("Nueva sala").setView(et)
-                    .setPositiveButton("Entrar") { _, _ ->
-                        val n = et.text.toString().trim()
-                        if (n.isNotEmpty()) client.send("change_room", "name" to n)
-                    }.setNegativeButton("Cancelar", null).show()
+            .setTitle("🏠 Jugar")
+            .setItems(arrayOf(
+                "⚡ Jugar rápido (sala pública)",
+                "➕ Crear sala privada",
+                "🔑 Entrar con código"
+            )) { _, which ->
+                when (which) {
+                    0 -> client.send("change_room", "name" to "principal")
+                    1 -> client.send("create_room")
+                    else -> askCode()
+                }
             }
             .setNegativeButton("Cerrar", null).show()
+    }
+
+    private fun askCode() {
+        val et = EditText(this).apply {
+            hint = "Código de 4 letras (ej. K7Q2)"
+            setSingleLine()
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
+            filters = arrayOf(InputFilter.LengthFilter(9))
+        }
+        AlertDialog.Builder(this).setTitle("Entrar con código").setView(et)
+            .setPositiveButton("Entrar") { _, _ ->
+                val c = et.text.toString().trim().uppercase()
+                if (c.isNotEmpty()) client.send("change_room", "name" to c)
+            }.setNegativeButton("Cancelar", null).show()
+    }
+
+    private fun showRemoveBot() {
+        if (botColors.isEmpty()) return
+        val labels = botColors.map { "Quitar bot ${Board.ES[it] ?: it}" }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("✕ Quitar bot")
+            .setItems(labels) { _, which -> client.send("remove_bot", "color" to botColors[which]) }
+            .setNegativeButton("Cerrar", null).show()
+    }
+
+    private fun shareRoom() {
+        val base = Config.SERVER_URL.replace("wss://", "https://").replace("ws://", "http://").trimEnd('/')
+        val text = "¡Juega Parqués conmigo! Código de sala: $roomName\n$base/?sala=$roomName"
+        startActivity(Intent.createChooser(
+            Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_TEXT, text) },
+            "Compartir sala"
+        ))
     }
 
     /**
@@ -828,14 +861,13 @@ class MainActivity : Activity(), GameClient.Listener {
                 setBusy(false, null)
                 toast("Tu sesión venció: inicia sesión de nuevo")
             }
-            "rooms" -> if (user != null && roomsRequested) { roomsRequested = false; showRooms(m) }
             "room_changed" -> if (user != null) {
                 roomName = m.getString("room")
                 resetGameUi()
                 tvLog.text = ""
                 chatBox.removeAllViews()
-                tvRoom.text = "🏠 $roomName"
-                toast("Estás en la sala «$roomName»")
+                tvRoom.text = if (roomName == "principal") "🏠 Jugar rápido" else "🔒 Sala $roomName"
+                toast(if (roomName == "principal") "Estás en Jugar rápido" else "Estás en la sala privada $roomName")
             }
             "left_game" -> if (user != null) { resetGameUi(); toast("Saliste de la partida") }
             "registered" -> {
@@ -909,7 +941,21 @@ class MainActivity : Activity(), GameClient.Listener {
     private fun onLobby(m: JSONObject) {
         val seats = m.getJSONObject("seats")
         val lines = ArrayList<String>()
-        if (m.has("room")) { roomName = m.getString("room"); tvRoom.text = "🏠 $roomName" }
+        if (m.has("room")) roomName = m.getString("room")
+        roomPrivate = m.optBoolean("private", false)
+        hostName = if (m.isNull("host")) "" else m.optString("host", "")
+        tvRoom.text = roomLabel() + if (roomPrivate && hostName.isNotEmpty()) "  ·  anfitrión: $hostName" else ""
+        val canMgr = !roomPrivate || hostName == user
+        val bots = ArrayList<String>()
+        for (c in seats.keys()) {
+            if (seats.getJSONObject(c).getBoolean("bot")) bots.add(c)
+        }
+        botColors = bots
+        val playing = m.getBoolean("playing")
+        spLevel.visibility = if (canMgr) View.VISIBLE else View.GONE
+        btnAddBot.visibility = if (canMgr) View.VISIBLE else View.GONE
+        btnRemoveBot.visibility = if (canMgr && bots.isNotEmpty() && !playing) View.VISIBLE else View.GONE
+        btnShare.visibility = if (roomPrivate) View.VISIBLE else View.GONE
         for (c in seats.keys()) {
             val s = seats.getJSONObject(c)
             if (s.getString("name") == user) myColor = c
