@@ -56,9 +56,9 @@ class MainActivity : Activity(), GameClient.Listener {
     private val RULES = """
         • Juegan de 2 a 4 personas, cada una con 4 fichas de un color. Puedes completar la mesa con bots.
         • Lanza los dos dados: cada dado se usa por separado para mover una ficha.
-        • Con un par (dados iguales) puedes sacar una ficha de la cárcel y repites turno.
+        • Con un par (dados iguales) salen TODAS tus fichas de la cárcel y repites turno. Si en tu salida hay un rival, lo mandas a la cárcel.
         • Tres pares seguidos: eliges una ficha y la llevas directo a la meta.
-        • Las casillas marrones (salidas y seguros) protegen tus fichas.
+        • Las casillas marrones (salidas y seguros) protegen tus fichas, salvo al salir de la cárcel. No hay bloqueos.
         • Si caes sobre una ficha rival fuera de un seguro, la mandas a la cárcel.
         • Gana quien lleve sus 4 fichas a la meta, en el centro del tablero.
     """.trimIndent()
@@ -166,7 +166,7 @@ class MainActivity : Activity(), GameClient.Listener {
         l.contains("ganó la partida") -> "🏆"
         l.contains("regresa la ficha") -> "💥"
         l.contains(" lanza ") -> "🎲"
-        l.contains("saca la ficha") -> "🔓"
+        l.contains("saca la ficha") || l.contains("saca las fichas") -> "🔓"
         l.contains("Tiempo agotado") -> "⏱"
         l.contains("abandonó") || l.contains("se desconectó") -> "🚪"
         else -> "•"
@@ -750,7 +750,7 @@ class MainActivity : Activity(), GameClient.Listener {
     private fun describe(mv: JSONObject): String {
         val n = mv.getInt("piece") + 1
         return when (mv.getString("kind")) {
-            "exit" -> "Ficha $n: salir de la cárcel"
+            "exit" -> if (mv.optInt("count", 1) > 1) "Sacar las ${mv.getInt("count")} fichas de la cárcel" else "Ficha $n: salir de la cárcel"
             "goal" -> "Ficha $n: llevar a la meta"
             else -> "Ficha $n: avanzar ${mv.getInt("die")}"
         }
@@ -927,6 +927,7 @@ class MainActivity : Activity(), GameClient.Listener {
         when {
             line.contains(" mueve la ficha") -> lastMover = line.substringBefore(" mueve la ficha")
             line.contains(" saca la ficha") -> lastMover = line.substringBefore(" saca la ficha")
+            line.contains(" saca las fichas") -> lastMover = line.substringBefore(" saca las fichas")
             line.startsWith("$me lanza") && line.contains("¡par!") -> feedback.pair()
             line.contains(" regresa la ficha") && line.contains("a la cárcel") -> {
                 val victim = line.removePrefix("¡").substringBefore(" regresa la ficha")
