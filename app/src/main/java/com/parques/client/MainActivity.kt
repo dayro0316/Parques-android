@@ -59,6 +59,7 @@ class MainActivity : Activity(), GameClient.Listener {
         • Con un par (dados iguales) salen TODAS tus fichas de la cárcel y repites turno. Si en tu salida hay un rival, lo mandas a la cárcel.
         • Tres pares seguidos: eliges una ficha y la llevas directo a la meta.
         • Las casillas marrones (salidas y seguros) protegen tus fichas, salvo al salir de la cárcel. No hay bloqueos.
+        • Soplada: si podías comer una ficha rival y no lo hiciste, pierdes la ficha que podía comer.
         • Si caes sobre una ficha rival fuera de un seguro, la mandas a la cárcel.
         • Gana quien lleve sus 4 fichas a la meta, en el centro del tablero.
     """.trimIndent()
@@ -164,6 +165,7 @@ class MainActivity : Activity(), GameClient.Listener {
 
     private fun icon(l: String) = when {
         l.contains("ganó la partida") -> "🏆"
+        l.contains("Soplada") -> "🌬"
         l.contains("regresa la ficha") -> "💥"
         l.contains(" lanza ") -> "🎲"
         l.contains("saca la ficha") || l.contains("saca las fichas") -> "🔓"
@@ -936,8 +938,33 @@ class MainActivity : Activity(), GameClient.Listener {
         }
     }
 
+    private var seenEv = 0
+
+    /** Avisos en pantalla cuando te comen una ficha, comes a alguien o te soplan. */
+    private fun notify(e: JSONObject) {
+        when (e.optString("kind")) {
+            "capture" -> when {
+                e.getString("victim") == user -> toast("💥 ¡${e.getString("by")} te comió la ficha ${e.getInt("piece")}!")
+                e.getString("by") == user -> toast("🎯 ¡Mandaste a la cárcel a ${e.getString("victim")}!")
+            }
+            "blow" -> toast(
+                if (e.getString("player") == user) "🌬 ¡Te soplaron! Pudiste comer y no comiste: pierdes la ficha ${e.getInt("piece")}"
+                else "🌬 ¡${e.getString("player")} fue soplado!"
+            )
+        }
+    }
+
     private fun onState(m: JSONObject) {
+        val hadState = state != null
         state = m
+        val evTotal = m.optInt("events_total", 0)
+        if (!hadState) seenEv = evTotal
+        else {
+            val ne = evTotal - seenEv
+            val evs = m.optJSONArray("events")
+            if (ne > 0 && evs != null) for (i in maxOf(0, evs.length() - minOf(ne, 6)) until evs.length()) notify(evs.getJSONObject(i))
+            seenEv = evTotal
+        }
         boardView.state = m
 
         val total = m.getInt("log_total")
