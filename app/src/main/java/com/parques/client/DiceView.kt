@@ -139,12 +139,12 @@ class DiceView(context: Context) : View(context) {
             rect.set(-h + dp(2f), -h + dp(4f), h + dp(2f), h + dp(4f))
             canvas.drawRoundRect(rect, r, r, paint)
             // cara
-            paint.color = Color.argb(alpha, 247, 244, 236)
+            paint.color = if (Theme.dark) Color.argb(alpha, 233, 238, 248) else Color.argb(alpha, 255, 255, 255)
             rect.set(-h, -h, h, h)
             canvas.drawRoundRect(rect, r, r, paint)
             paint.style = Paint.Style.STROKE
             paint.strokeWidth = dp(1f)
-            paint.color = Color.argb(alpha, 154, 148, 134)
+            paint.color = Color.argb(alpha, 135, 148, 173)
             canvas.drawRoundRect(rect, r, r, paint)
             // puntos
             paint.style = Paint.Style.FILL

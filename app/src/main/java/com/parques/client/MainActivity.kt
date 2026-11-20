@@ -10,6 +10,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.text.TextUtils
 import android.text.Editable
 import android.text.InputFilter
 import android.text.InputType
@@ -18,14 +19,14 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
-import android.widget.ArrayAdapter
+import android.view.WindowManager
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
-import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import org.json.JSONArray
@@ -80,7 +81,23 @@ class MainActivity : Activity(), GameClient.Listener {
     )
 
     private lateinit var boardView: BoardView
-    private lateinit var tvLobby: TextView
+    private lateinit var seatsBox: LinearLayout
+    private lateinit var playersBox: LinearLayout
+    private lateinit var turnBar: LinearLayout
+    private lateinit var tvTurn: TextView
+    private lateinit var tvHostInfo: TextView
+    private lateinit var logScroll: ScrollView
+    private lateinit var btnSound: PillButton
+    private lateinit var btnTheme: PillButton
+    private lateinit var btnLevel: PillButton
+    private var panels: List<View> = emptyList()
+    private var tabButtons: List<PillButton> = emptyList()
+    private var currentTab = 0
+    private var chatUnread = 0
+    private var botLevelIdx = 1
+    private var lastLobby: JSONObject? = null
+    private val chatHistory = ArrayList<Pair<String, String>>()
+    private val logBuffer = StringBuilder()
     private lateinit var tvDice: TextView
     private lateinit var tvHint: TextView
     private lateinit var tvTimer: TextView
@@ -95,14 +112,18 @@ class MainActivity : Activity(), GameClient.Listener {
             }
             val left = maxOf(0L, (turnDeadline - SystemClock.elapsedRealtime() + 999) / 1000)
             tvTimer.text = "⏱ $left s"
-            tvTimer.setTextColor(Color.parseColor(if (left <= 5) "#d50000" else "#1E2A44"))
+            val st = state
+            val myTurn = st != null && !st.getBoolean("over") && st.optString("current") == user
+            tvTimer.setTextColor(
+                if (left <= 5) (if (myTurn) Color.parseColor("#FFEB3B") else Theme.bad)
+                else (if (myTurn) Color.WHITE else Theme.text)
+            )
             handler.postDelayed(this, 250)
         }
     }
     private lateinit var diceView: DiceView
     private var canMoveNow = false
     private val rollRegex = Regex("""lanza \d+ y \d+""")
-    private lateinit var tvPlayers: TextView
     private lateinit var tvSync: TextView
     private lateinit var tvLog: TextView
     private lateinit var btnRoll: Button
@@ -110,7 +131,6 @@ class MainActivity : Activity(), GameClient.Listener {
     private lateinit var movesBox: LinearLayout
     private lateinit var chatBox: LinearLayout
     private lateinit var chatScroll: ScrollView
-    private lateinit var spLevel: Spinner
     private lateinit var tvRoom: TextView
     private lateinit var btnLeave: Button
     private var recIndex = -1
@@ -129,6 +149,9 @@ class MainActivity : Activity(), GameClient.Listener {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Theme.init(this, prefs.getString("theme", "") ?: "")
+        feedback.soundOn = prefs.getBoolean("sound", true)
+        window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
         showLogin()
         // Si ya hay usuario guardado, entra solo.
         val u = prefs.getString("user", "") ?: ""
@@ -153,20 +176,58 @@ class MainActivity : Activity(), GameClient.Listener {
         AlertDialog.Builder(this).setTitle(title).setMessage(msg).setPositiveButton("OK", null).show()
     }
 
-    private fun button(text: String, onClick: () -> Unit) = Button(this).apply {
+    private fun button(text: String, onClick: () -> Unit) = PillButton(this).apply {
         this.text = text
-        isAllCaps = false
+        setOnClickListener { onClick() }
+    }
+
+    private fun smallButton(text: String, onClick: () -> Unit) = PillButton(this).apply {
+        this.text = text
+        textSize = 16f
+        setPadding(dp(10), dp(6), dp(10), dp(6))
         setOnClickListener { onClick() }
     }
 
     private fun row(vararg views: View) = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
-        for (v in views) addView(v, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        for (v in views) {
+            addView(v, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                setMargins(dp(3), dp(3), dp(3), dp(3))
+            })
+        }
     }
 
     private fun column() = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
         setPadding(dp(10), dp(10), dp(10), dp(10))
+    }
+
+    private fun roundBg(fill: Int, stroke: Int? = null, r: Int = 12) = GradientDrawable().apply {
+        cornerRadius = dp(r).toFloat()
+        setColor(fill)
+        if (stroke != null) setStroke(dp(2), stroke)
+    }
+
+    private fun dot(hex: String, sizeDp: Int) = View(this).apply {
+        background = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(Color.parseColor(hex))
+        }
+        layoutParams = LinearLayout.LayoutParams(dp(sizeDp), dp(sizeDp)).apply { marginEnd = dp(8) }
+    }
+
+    private fun styleInput(et: EditText) {
+        et.setTextColor(Theme.text)
+        et.setHintTextColor(Theme.muted)
+        et.background = roundBg(Theme.surface2, Theme.border, 10)
+        et.setPadding(dp(12), dp(10), dp(12), dp(10))
+    }
+
+    private fun label(text: String, size: Float = 13f, bold: Boolean = false, color: Int = Theme.text) = TextView(this).apply {
+        this.text = text
+        textSize = size
+        setTextColor(color)
+        if (bold) setTypeface(null, Typeface.BOLD)
     }
 
     private fun icon(l: String) = when {
@@ -181,14 +242,16 @@ class MainActivity : Activity(), GameClient.Listener {
     }
 
     private fun log(line: String) {
-        tvLog.append((if (line.startsWith("⚠") || line.startsWith("💡")) "" else icon(line) + " ") + line + "\n")
-        if (tvLog.text.length > 6000) tvLog.text = tvLog.text.takeLast(4000)
+        logBuffer.append(if (line.startsWith("⚠") || line.startsWith("💡")) "" else icon(line) + " ").append(line).append('\n')
+        if (logBuffer.length > 6000) logBuffer.delete(0, logBuffer.length - 4000)
+        tvLog.text = logBuffer.toString()
+        logScroll.post { logScroll.fullScroll(View.FOCUS_DOWN) }
     }
 
     // ---------------------------------------------------------------- pantalla de login
     private fun showLogin() {
-        val brown = Color.parseColor("#1E2A44")
-        val cream = Color.parseColor("#EEF2FA")
+        val brown = Theme.text
+        val cream = Theme.bg
         val root = column().apply {
             gravity = Gravity.CENTER_HORIZONTAL
             setPadding(dp(24), dp(32), dp(24), dp(24))
@@ -207,7 +270,7 @@ class MainActivity : Activity(), GameClient.Listener {
         root.addView(TextView(this).apply {
             text = "Juega con tus amigos desde cualquier lugar"
             textSize = 14f
-            setTextColor(Color.parseColor("#5B6780"))
+            setTextColor(Theme.muted)
             gravity = Gravity.CENTER
             setPadding(0, dp(2), 0, dp(10))
         })
@@ -222,7 +285,7 @@ class MainActivity : Activity(), GameClient.Listener {
         // ---- Campos ----
         var mode = "login"
         val nameRe = Regex("^[A-Za-z0-9_]{3,16}$")
-        val grayText = Color.parseColor("#5B6780")
+        val grayText = Theme.muted
 
         val etUser = EditText(this).apply {
             hint = "3-16 letras, números o _"
@@ -240,7 +303,8 @@ class MainActivity : Activity(), GameClient.Listener {
             setSingleLine()
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
         }
-        fun hintView() = TextView(this).apply { textSize = 12f; setTextColor(Color.parseColor("#7B8799")) }
+        for (e in listOf(etUser, etPass, etPass2)) styleInput(e)
+        fun hintView() = TextView(this).apply { textSize = 12f; setTextColor(Theme.muted) }
         val hUser = hintView()
         val hPass = hintView()
         val hPass2 = hintView()
@@ -290,12 +354,13 @@ class MainActivity : Activity(), GameClient.Listener {
             isChecked = true
             textSize = 13f
             setTextColor(grayText)
+            buttonTintList = android.content.res.ColorStateList.valueOf(Theme.accent)
         }
 
         // ---- Validación mientras se escribe (mismas reglas del servidor) ----
         fun setHint(h: TextView, msg: String, kind: Int) {   // kind: 0 neutro, 1 error, 2 correcto
             h.text = msg
-            h.setTextColor(Color.parseColor(when (kind) { 1 -> "#C62828"; 2 -> "#0A7D0A"; else -> "#7B8799" }))
+            h.setTextColor(when (kind) { 1 -> Theme.bad; 2 -> Theme.good; else -> Theme.muted })
         }
         fun validate(): Boolean {
             val u = etUser.text.toString()
@@ -338,9 +403,9 @@ class MainActivity : Activity(), GameClient.Listener {
             remember = cbRemember.isChecked
             startAuth(mode, etUser.text.toString().trim(), etPass.text.toString())
         }.apply {
-            setBackgroundColor(Color.parseColor("#0A7D0A"))
-            setTextColor(Color.WHITE)
+            style(Theme.good, Color.WHITE)
             setTypeface(null, Typeface.BOLD)
+            textSize = 16f
         }
 
         // ---- Pestañas «Ingresar» / «Crear cuenta» ----
@@ -351,7 +416,7 @@ class MainActivity : Activity(), GameClient.Listener {
             setPadding(dp(4), dp(4), dp(4), dp(4))
             background = GradientDrawable().apply {
                 cornerRadius = dp(12).toFloat()
-                setColor(Color.parseColor("#DDE4F2"))
+                setColor(Theme.chip)
             }
             addView(tabLogin, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             addView(tabReg, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
@@ -359,7 +424,7 @@ class MainActivity : Activity(), GameClient.Listener {
         fun styleTab(b: Button, active: Boolean) {
             b.background = GradientDrawable().apply {
                 cornerRadius = dp(9).toFloat()
-                setColor(if (active) Color.WHITE else Color.TRANSPARENT)
+                setColor(if (active) Theme.surface else Color.TRANSPARENT)
             }
             b.setTextColor(if (active) brown else grayText)
             b.setTypeface(null, if (active) Typeface.BOLD else Typeface.NORMAL)
@@ -409,10 +474,11 @@ class MainActivity : Activity(), GameClient.Listener {
             loginStatus?.let {
                 it.visibility = View.VISIBLE
                 it.text = "✔ Cuenta creada. Ahora inicia sesión con tu clave."
-                it.setTextColor(Color.parseColor("#0A7D0A"))
+                it.setTextColor(Theme.good)
             }
             etPass.requestFocus()
         }
+        window.decorView.setBackgroundColor(cream)
         setContentView(ScrollView(this).apply {
             isFillViewport = true
             setBackgroundColor(cream)
@@ -425,7 +491,7 @@ class MainActivity : Activity(), GameClient.Listener {
         loginStatus?.let {
             it.visibility = if (busy) View.VISIBLE else View.GONE
             it.text = msg ?: ""
-            it.setTextColor(Color.parseColor("#1E2A44"))
+            it.setTextColor(Theme.text)
         }
         btnLogin?.isEnabled = !busy
         btnRegister?.isEnabled = !busy
@@ -467,7 +533,10 @@ class MainActivity : Activity(), GameClient.Listener {
     private fun logout() {
         if (sessionToken.isNotEmpty()) client.send("logout", "token" to sessionToken)
         sessionToken = ""
-        prefs.edit().clear().apply()
+        prefs.edit().remove("user").remove("token").apply()
+        chatHistory.clear()
+        logBuffer.setLength(0)
+        lastLobby = null
         handler.removeCallbacksAndMessages(null)
         client.close()
         user = null
@@ -485,99 +554,233 @@ class MainActivity : Activity(), GameClient.Listener {
         btnLogin = null
         btnRegister = null
         onRegistered = null
+        window.decorView.setBackgroundColor(Theme.bg)
 
-        val root = column()
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Theme.bg)
+            fitsSystemWindows = true
+            setPadding(dp(10), dp(6), dp(10), dp(6))
+        }
+        val wrap = ViewGroup.LayoutParams.WRAP_CONTENT
+        val match = ViewGroup.LayoutParams.MATCH_PARENT
 
+        // ---- barra superior
+        tvRoom = label(roomLabel(), 15f, true).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END }
+        btnSound = smallButton(if (feedback.soundOn) "🔊" else "🔇") {
+            feedback.soundOn = !feedback.soundOn
+            prefs.edit().putBoolean("sound", feedback.soundOn).apply()
+            btnSound.text = if (feedback.soundOn) "🔊" else "🔇"
+        }
+        btnTheme = smallButton(if (Theme.dark) "☀️" else "🌙") {
+            val nd = if (Theme.dark) "light" else "dark"
+            prefs.edit().putString("theme", nd).apply()
+            Theme.init(this, nd)
+            rebuildUi()
+        }
+        val btnMenu = smallButton("⋮") { showMenu() }
+        val top = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        top.addView(label("🎲", 20f), LinearLayout.LayoutParams(wrap, wrap).apply { marginEnd = dp(6) })
+        top.addView(tvRoom, LinearLayout.LayoutParams(0, wrap, 1f))
+        for (b in listOf(btnSound, btnTheme, btnMenu)) top.addView(b, LinearLayout.LayoutParams(wrap, wrap).apply { marginStart = dp(6) })
+        root.addView(top)
+
+        // ---- tablero
         boardView = BoardView(this).also {
             it.user = user ?: ""
             it.onPieceTap = { slot -> onPieceTap(slot) }
+            it.onAnimEvent = { ev ->
+                when (ev) {
+                    "capture" -> feedback.sfxCapture()
+                    "goal" -> feedback.sfxGoal()
+                    else -> feedback.sfxMove()
+                }
+            }
         }
-        root.addView(boardView, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        tvSync = TextView(this).apply { text = "Reloj: sin sincronizar"; textSize = 11f }
-        root.addView(tvSync)
+        root.addView(boardView, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(6) })
 
-        // Sala
-        tvRoom = TextView(this).apply { text = roomLabel(); textSize = 16f; setTypeface(null, Typeface.BOLD) }
-        root.addView(row(tvRoom, button("🏠 Jugar / salas") { showPlayMenu() }))
-        val first = Board.COLORS.take(2)
-        val second = Board.COLORS.drop(2)
-        for (group in listOf(first, second)) {
-            root.addView(row(*group.map { c ->
-                button("Unirse: ${Board.ES.getValue(c)}") { client.send("join", "color" to c) }
-            }.toTypedArray()))
+        // ---- barra de turno
+        tvTurn = label("Esperando jugadores…", 15f, true)
+        tvTimer = TextView(this).apply { textSize = 18f; setTypeface(null, Typeface.BOLD); setTextColor(Theme.text) }
+        turnBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = roundBg(Theme.surface, Theme.border, 14)
+            setPadding(dp(14), dp(8), dp(14), dp(8))
+            addView(tvTurn, LinearLayout.LayoutParams(0, wrap, 1f))
+            addView(tvTimer)
         }
-        spLevel = Spinner(this).apply {
-            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item,
-                levelKeys.map { "🤖 " + levelEs.getValue(it) })
-            setSelection(1)
+        root.addView(turnBar, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(6) })
+
+        // ---- pestañas
+        val names = listOf("🏠 Sala", "🎲 Partida", "💬 Chat", "📜 Historial")
+        tabButtons = names.mapIndexed { i, n -> smallButton(n) { selectTab(i) }.apply { textSize = 13f } }
+        val tabRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        for (b in tabButtons) tabRow.addView(b, LinearLayout.LayoutParams(0, wrap, 1f).apply { setMargins(dp(2), dp(6), dp(2), dp(6)) })
+        root.addView(tabRow)
+
+        // ---- panel Sala
+        tvHostInfo = label("", 12f, false, Theme.muted)
+        btnLevel = smallButton("") {
+            botLevelIdx = (botLevelIdx + 1) % levelKeys.size
+            updateLevelButton()
         }
-        btnAddBot = button("+ Bot") { client.send("add_bot", "level" to levelKeys[spLevel.selectedItemPosition]) }
-        root.addView(row(spLevel, btnAddBot, button("Listo") { client.send("ready") }))
+        updateLevelButton()
+        btnAddBot = button("+ Bot") { client.send("add_bot", "level" to levelKeys[botLevelIdx]) }
         btnRemoveBot = button("✕ Quitar bot") { showRemoveBot() }.apply { visibility = View.GONE }
         btnShare = button("🔗 Compartir código") { shareRoom() }.apply { visibility = View.GONE }
-        root.addView(row(btnRemoveBot, btnShare))
-        tvLobby = TextView(this).apply { text = "Sala vacía" }
-        root.addView(tvLobby)
+        seatsBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val joinRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        for (c in Board.COLORS) {
+            val hex = Color.parseColor(Board.HEX.getValue(c))
+            val b = smallButton(Board.ES.getValue(c)) { client.send("join", "color" to c) }
+            b.style(hex, if (c == "yellow") Color.parseColor("#1B2433") else Color.WHITE)
+            joinRow.addView(b, LinearLayout.LayoutParams(0, wrap, 1f).apply { setMargins(dp(2), dp(3), dp(2), dp(3)) })
+        }
+        val salaCol = column().apply {
+            addView(button("🏠 Jugar / salas") { showPlayMenu() })
+            addView(tvHostInfo)
+            addView(label("Elige tu color", 13f, true).apply { setPadding(0, dp(8), 0, 0) })
+            addView(joinRow)
+            addView(label("Bots", 13f, true).apply { setPadding(0, dp(8), 0, 0) })
+            addView(row(btnLevel, btnAddBot))
+            addView(row(btnRemoveBot, btnShare))
+            addView(button("✔ Listo") { client.send("ready") }.apply { style(Theme.good, Color.WHITE) })
+            addView(label("Mesa", 13f, true).apply { setPadding(0, dp(10), 0, dp(4)) })
+            addView(seatsBox)
+        }
+        val salaPanel = ScrollView(this).apply { addView(salaCol) }
 
-        // Partida
-        root.addView(TextView(this).apply { text = "Partida"; textSize = 16f; setTypeface(null, Typeface.BOLD) })
+        // ---- panel Partida
+        playersBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         diceView = DiceView(this)
-        tvDice = TextView(this).apply { text = "Dados: -"; textSize = 13f; gravity = Gravity.CENTER_HORIZONTAL }
+        tvDice = label("Dados: -", 13f, false, Theme.muted).apply { gravity = Gravity.CENTER_HORIZONTAL }
         tvHint = TextView(this).apply {
             textSize = 14f
             setTypeface(null, Typeface.BOLD)
-            setTextColor(Color.parseColor("#0a7d0a"))
+            setTextColor(Theme.good)
             gravity = Gravity.CENTER_HORIZONTAL
         }
-        tvTimer = TextView(this).apply {
-            textSize = 18f
-            setTypeface(null, Typeface.BOLD)
-            gravity = Gravity.CENTER_HORIZONTAL
+        btnRoll = button("🎲 Lanzar dados") { client.send("roll") }.apply {
+            isEnabled = false
+            (this as PillButton).style(Theme.accent, Theme.accentText)
         }
-        tvPlayers = TextView(this).apply { typeface = Typeface.MONOSPACE; textSize = 12f }
-        root.addView(diceView, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        root.addView(tvDice, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        root.addView(tvHint, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        root.addView(tvTimer, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        root.addView(tvPlayers)
-        btnRoll = button("Lanzar dados") { client.send("roll") }.apply { isEnabled = false }
-        btnRec = button("Recomendar") { client.send("recommend") }.apply { isEnabled = false }
-        root.addView(row(btnRoll, btnRec))
-        root.addView(TextView(this).apply { text = "Jugadas posibles"; textSize = 14f; setTypeface(null, Typeface.BOLD); setPadding(0, dp(8), 0, dp(2)) })
+        btnRec = button("💡 Recomendar") { client.send("recommend") }.apply { isEnabled = false }
         movesBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        root.addView(movesBox, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        btnLeave = button("🚪 Salir de la partida") { askLeave() }.apply {
+            visibility = View.GONE
+            (this as PillButton).style(Theme.surface, Theme.bad, 12, Theme.bad)
+        }
+        val partidaCol = column().apply {
+            addView(playersBox)
+            addView(diceView, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(8) })
+            addView(tvDice)
+            addView(tvHint, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(4) })
+            addView(row(btnRoll, btnRec))
+            addView(label("Jugadas posibles", 14f, true).apply { setPadding(0, dp(8), 0, dp(2)) })
+            addView(movesBox)
+            addView(btnLeave, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(10) })
+        }
+        val partidaPanel = ScrollView(this).apply { addView(partidaCol) }
         renderMoves(false)
 
-        // Estadísticas
-        root.addView(row(
-            button("Ranking") { client.send("stats_top") },
-            button("Mi prob.") { client.send("stats_prob") },
-            button("Historial") { client.send("history") }
-        ))
-
-        // Chat en nubes (panel aparte del registro de la partida)
-        root.addView(TextView(this).apply { text = "☁️ Chat"; textSize = 16f; setTypeface(null, Typeface.BOLD); setPadding(0, dp(10), 0, dp(2)) })
-        chatBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(6), dp(6), dp(6), dp(6)) }
+        // ---- panel Chat
+        chatBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(8), dp(8), dp(8), dp(8)) }
         chatScroll = ScrollView(this).apply {
-            background = GradientDrawable().apply { cornerRadius = dp(14).toFloat(); setColor(Color.parseColor("#E3EAF7")) }
-            setOnTouchListener { v, _ -> v.parent.requestDisallowInterceptTouchEvent(true); false }
+            background = roundBg(Theme.surface2, Theme.border, 14)
             addView(chatBox)
         }
-        root.addView(chatScroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(220)))
-        etChat = EditText(this).apply { hint = "Escribe un mensaje…"; setSingleLine() }
-        root.addView(row(etChat, button("Enviar") { sendChat() }))
+        etChat = EditText(this).apply {
+            hint = "Escribe un mensaje…"
+            setSingleLine()
+            styleInput(this)
+            setOnEditorActionListener { _, _, _ -> sendChat(); true }
+        }
+        val sendRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(etChat, LinearLayout.LayoutParams(0, wrap, 1f))
+            addView(button("Enviar") { sendChat() }.apply { style(Theme.accent, Theme.accentText) },
+                LinearLayout.LayoutParams(wrap, wrap).apply { marginStart = dp(6) })
+        }
+        val chatPanel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(10), dp(10), dp(10), dp(10))
+            addView(chatScroll, LinearLayout.LayoutParams(match, 0, 1f))
+            addView(sendRow, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(8) })
+        }
 
-        // Historial de la partida
-        root.addView(TextView(this).apply { text = "📜 Historial"; textSize = 14f; setTypeface(null, Typeface.BOLD); setPadding(0, dp(10), 0, 0) })
-        tvLog = TextView(this).apply { textSize = 12f }
-        root.addView(tvLog)
+        // ---- panel Historial
+        tvLog = label("", 12f)
+        tvSync = label("Reloj: sin sincronizar", 11f, false, Theme.muted)
+        logScroll = ScrollView(this).apply {
+            background = roundBg(Theme.surface, Theme.border, 14)
+            addView(LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(12), dp(10), dp(12), dp(10))
+                addView(tvLog)
+            })
+        }
+        val logPanel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(10), dp(10), dp(10), dp(10))
+            addView(logScroll, LinearLayout.LayoutParams(match, 0, 1f))
+            addView(tvSync, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(6) })
+        }
 
-        btnLeave = button("🚪 Salir de la partida") { askLeave() }.apply { visibility = View.GONE }
-        root.addView(btnLeave)
-        // Cerrar sesión (borra el usuario y el token guardados)
-        root.addView(button("Cerrar sesión") { logout() })
+        panels = listOf(salaPanel, partidaPanel, chatPanel, logPanel)
+        val frame = FrameLayout(this)
+        for (p in panels) frame.addView(p, FrameLayout.LayoutParams(match, match))
+        root.addView(frame, LinearLayout.LayoutParams(match, 0, 1f))
 
-        setContentView(ScrollView(this).apply { setBackgroundColor(Color.parseColor("#EEF2FA")); addView(root) })
+        setContentView(root)
+        selectTab(currentTab)
+        tvTimer.post { timerTick.run() }
+    }
+
+    private fun updateLevelButton() {
+        btnLevel.text = "🤖 Nivel: " + levelEs.getValue(levelKeys[botLevelIdx])
+    }
+
+    private fun selectTab(i: Int) {
+        currentTab = i
+        if (i == 2) chatUnread = 0
+        for ((k, p) in panels.withIndex()) p.visibility = if (k == i) View.VISIBLE else View.GONE
+        val names = listOf("🏠 Sala", "🎲 Partida", "💬 Chat", "📜 Historial")
+        for ((k, b) in tabButtons.withIndex()) {
+            b.text = names[k] + if (k == 2 && chatUnread > 0) " •" else ""
+            if (k == i) b.style(Theme.accent, Theme.accentText) else b.style(Theme.chip, Theme.text)
+        }
+        if (i == 2) chatScroll.post { chatScroll.fullScroll(View.FOCUS_DOWN) }
+        if (i == 3) logScroll.post { logScroll.fullScroll(View.FOCUS_DOWN) }
+    }
+
+    /** Reconstruye la pantalla (cambio de tema) sin cerrar la conexión. */
+    private fun rebuildUi() {
+        val st = state
+        val lobby = lastLobby
+        showGame()
+        tvLog.text = logBuffer.toString()
+        for ((w, t) in chatHistory) appendBubble(w, t)
+        lobby?.let { onLobby(it) }
+        if (st != null) {
+            seen = st.getInt("log_total")
+            state = null
+            onState(st)
+        }
+    }
+
+    private fun showMenu() {
+        AlertDialog.Builder(this)
+            .setItems(arrayOf("🏆 Ranking", "📊 Mi probabilidad", "🕘 Últimas partidas", "📖 Cómo se juega", "🚪 Cerrar sesión")) { _, w ->
+                when (w) {
+                    0 -> client.send("stats_top")
+                    1 -> client.send("stats_prob")
+                    2 -> client.send("history")
+                    3 -> dialog("Cómo se juega", RULES)
+                    else -> logout()
+                }
+            }.setNegativeButton("Cerrar", null).show()
     }
 
     private fun sendChat() {
@@ -588,17 +791,11 @@ class MainActivity : Activity(), GameClient.Listener {
         }
     }
 
-    private fun roundBg(fill: String, stroke: String? = null, r: Int = 12) = GradientDrawable().apply {
-        cornerRadius = dp(r).toFloat()
-        setColor(Color.parseColor(fill))
-        if (stroke != null) setStroke(dp(2), Color.parseColor(stroke))
-    }
-
     /** Lista visible de jugadas: cada una es una tarjeta; al presionarla se resalta la ficha en el tablero. */
     private fun renderMoves(canMove: Boolean) {
         movesBox.removeAllViews()
         if (!canMove) {
-            movesBox.addView(TextView(this).apply { text = "Aquí verás tus jugadas cuando lances los dados"; textSize = 12f; setTextColor(Color.parseColor("#7B8799")) })
+            movesBox.addView(label("Aquí verás tus jugadas cuando lances los dados", 12f, false, Theme.muted))
             return
         }
         for (i in 0 until moves.length()) {
@@ -609,8 +806,9 @@ class MainActivity : Activity(), GameClient.Listener {
                 isAllCaps = false
                 textSize = 14f
                 gravity = Gravity.START or Gravity.CENTER_VERTICAL
-                setTextColor(Color.parseColor("#1E2A44"))
-                background = roundBg(if (rec) "#E4F7E9" else "#FFFFFF", if (rec) "#00C853" else "#C9D3E6")
+                setTextColor(Theme.text)
+                background = roundBg(if (rec) Theme.mix(Theme.good, Theme.surface, 0.18f) else Theme.surface,
+                    if (rec) Theme.good else Theme.border)
                 setOnClickListener { if (canMoveNow) client.send("move", "index" to i) }
                 setOnTouchListener { _, ev ->
                     when (ev.action) {
@@ -624,27 +822,37 @@ class MainActivity : Activity(), GameClient.Listener {
         }
     }
 
-    /** Burbuja de chat con forma de nube: redondeada, con color según quién habla. */
     private fun addChat(who: String, text: String) {
+        chatHistory.add(who to text)
+        while (chatHistory.size > 60) chatHistory.removeAt(0)
+        appendBubble(who, text)
+        if (currentTab != 2 && who != user) {
+            chatUnread += 1
+            selectTab(currentTab)
+        }
+    }
+
+    /** Burbuja de chat con forma de nube: redondeada, con color según quién habla. */
+    private fun appendBubble(who: String, text: String) {
         val me = who == user
         val bot = who.startsWith("Bot-")
         val fill = when {
-            me -> "#CFE3FF"
-            bot -> Board.HEX[who.removePrefix("Bot-")]?.let { blend(it) } ?: "#FFFFFF"
-            else -> "#FFFFFF"
+            me -> Theme.cloudMe
+            bot -> Board.HEX[who.removePrefix("Bot-")]?.let { Theme.mix(Color.parseColor(it), Theme.cloud, 0.25f) } ?: Theme.cloud
+            else -> Theme.cloud
         }
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         col.addView(TextView(this).apply {
             this.text = (if (bot) "🤖 " else "") + who
             textSize = 10f
-            setTextColor(Color.parseColor("#5B6780"))
+            setTextColor(Theme.muted)
             gravity = if (me) Gravity.END else Gravity.START
             setPadding(dp(8), 0, dp(8), 0)
         })
         col.addView(TextView(this).apply {
             this.text = text
             textSize = 14f
-            setTextColor(Color.parseColor("#1E2A44"))
+            setTextColor(Theme.text)
             background = roundBg(fill, null, 20)
             setPadding(dp(14), dp(8), dp(14), dp(8))
         })
@@ -654,13 +862,6 @@ class MainActivity : Activity(), GameClient.Listener {
         })
         while (chatBox.childCount > 60) chatBox.removeViewAt(0)
         chatScroll.post { chatScroll.fullScroll(View.FOCUS_DOWN) }
-    }
-
-    /** Mezcla un color #rrggbb con blanco para el fondo pastel de las burbujas de los bots. */
-    private fun blend(hex: String): String {
-        val c = Color.parseColor(hex)
-        fun mix(v: Int) = (v * 0.25 + 255 * 0.75).toInt()
-        return String.format("#%02X%02X%02X", mix(Color.red(c)), mix(Color.green(c)), mix(Color.blue(c)))
     }
 
     private fun askLeave() {
@@ -685,7 +886,10 @@ class MainActivity : Activity(), GameClient.Listener {
         tvHint.text = ""
         turnDeadline = 0L
         tvTimer.text = ""
-        tvPlayers.text = ""
+        playersBox.removeAllViews()
+        tvTurn.text = "Esperando jugadores…"
+        turnBar.background = roundBg(Theme.surface, Theme.border, 14)
+        tvTimer.text = ""
         wasMyRoll = false
         recIndex = -1
         renderMoves(false)
@@ -843,7 +1047,7 @@ class MainActivity : Activity(), GameClient.Listener {
                 val tk = m.optString("token", "").ifEmpty { if (pd?.first == "resume_session") pd.third else sessionToken }
                 sessionToken = tk
                 if (remember && tk.isNotEmpty()) prefs.edit().putString("user", user).putString("token", tk).apply()
-                else prefs.edit().clear().apply()
+                else prefs.edit().remove("user").remove("token").apply()
                 lastCreds = (user ?: "") to tk
                 roomName = m.optString("room", roomName)
                 reconnectTries = 0
@@ -865,11 +1069,16 @@ class MainActivity : Activity(), GameClient.Listener {
                 roomName = m.getString("room")
                 resetGameUi()
                 tvLog.text = ""
+                logBuffer.setLength(0)
                 chatBox.removeAllViews()
+                chatHistory.clear()
+                seatsBox.removeAllViews()
+                lastLobby = null
+                selectTab(0)
                 tvRoom.text = if (roomName == "principal") "🏠 Jugar rápido" else "🔒 Sala $roomName"
                 toast(if (roomName == "principal") "Estás en Jugar rápido" else "Estás en la sala privada $roomName")
             }
-            "left_game" -> if (user != null) { resetGameUi(); toast("Saliste de la partida") }
+            "left_game" -> if (user != null) { resetGameUi(); selectTab(0); toast("Saliste de la partida") }
             "registered" -> {
                 // registrarse no inicia sesión: el usuario debe pulsar «Ingresar»
                 pending = null
@@ -890,6 +1099,7 @@ class MainActivity : Activity(), GameClient.Listener {
                 wasMyRoll = false
                 lastMover = null
                 log("Partida iniciada. Ajustes Berkeley: " + m.optJSONObject("sync"))
+                selectTab(1)
             }
             "time_adjust" -> if (user != null) {
                 tvSync.text = "Reloj sincronizado (Berkeley): ajuste %+.4fs".format(m.getDouble("delta"))
@@ -898,6 +1108,8 @@ class MainActivity : Activity(), GameClient.Listener {
             "game_over" -> if (user != null) {
                 val winner = if (m.isNull("winner")) "nadie" else m.getString("winner")
                 resetGameUi()
+                selectTab(0)
+                if (winner == user) feedback.sfxWin()
                 AlertDialog.Builder(this)
                     .setTitle(if (winner == user) "🏆 ¡Ganaste!" else "🎉 Fin de la partida")
                     .setMessage(if (winner == user) "¡Felicitaciones! ¿Otra partida?" else "Ganó: $winner\n¿Otra partida?")
@@ -939,34 +1151,41 @@ class MainActivity : Activity(), GameClient.Listener {
     }
 
     private fun onLobby(m: JSONObject) {
+        lastLobby = m
         val seats = m.getJSONObject("seats")
-        val lines = ArrayList<String>()
         if (m.has("room")) roomName = m.getString("room")
         roomPrivate = m.optBoolean("private", false)
         hostName = if (m.isNull("host")) "" else m.optString("host", "")
-        tvRoom.text = roomLabel() + if (roomPrivate && hostName.isNotEmpty()) "  ·  anfitrión: $hostName" else ""
+        tvRoom.text = roomLabel()
+        tvHostInfo.text = if (roomPrivate && hostName.isNotEmpty()) "Anfitrión: $hostName · código $roomName" else "Sala pública: entra quien quiera"
         val canMgr = !roomPrivate || hostName == user
         val bots = ArrayList<String>()
-        for (c in seats.keys()) {
-            if (seats.getJSONObject(c).getBoolean("bot")) bots.add(c)
-        }
+        for (c in seats.keys()) if (seats.getJSONObject(c).getBoolean("bot")) bots.add(c)
         botColors = bots
         val playing = m.getBoolean("playing")
-        spLevel.visibility = if (canMgr) View.VISIBLE else View.GONE
+        btnLevel.visibility = if (canMgr) View.VISIBLE else View.GONE
         btnAddBot.visibility = if (canMgr) View.VISIBLE else View.GONE
         btnRemoveBot.visibility = if (canMgr && bots.isNotEmpty() && !playing) View.VISIBLE else View.GONE
         btnShare.visibility = if (roomPrivate) View.VISIBLE else View.GONE
-        for (c in seats.keys()) {
-            val s = seats.getJSONObject(c)
-            if (s.getString("name") == user) myColor = c
-            lines.add(
-                "${Board.ES[c] ?: c}: ${s.getString("name")}" +
+        seatsBox.removeAllViews()
+        for (c in Board.COLORS) {
+            val s = if (seats.has(c)) seats.optJSONObject(c) else null
+            if (s != null && s.getString("name") == user) myColor = c
+            val card = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                background = roundBg(Theme.surface, Theme.border, 12)
+                setPadding(dp(12), dp(10), dp(12), dp(10))
+            }
+            card.addView(dot(Board.HEX.getValue(c), 16))
+            val txt = if (s == null) "${Board.ES[c]}: libre" else
+                "${Board.ES[c]}: ${s.getString("name")}" +
                     (if (s.getBoolean("bot")) " 🤖 ${levelEs[s.optString("level", "normal")] ?: "normal"}" else "") +
-                    (if (s.getBoolean("ready")) " ✔" else "")
-            )
+                    (if (s.getBoolean("ready")) "  ✔ listo" else "")
+            card.addView(label(txt, 14f, s != null, if (s == null) Theme.muted else Theme.text))
+            seatsBox.addView(card, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(4) })
         }
-        if (m.getBoolean("playing")) lines.add("— partida en curso, ingreso bloqueado —")
-        tvLobby.text = if (lines.isEmpty()) "Sala vacía" else lines.joinToString("\n")
+        if (playing) seatsBox.addView(label("Partida en curso: ingreso bloqueado", 12f, false, Theme.muted).apply { setPadding(0, dp(6), 0, 0) })
     }
 
     /** Vibración y sonido según las líneas nuevas del registro de la partida. */
@@ -1074,6 +1293,18 @@ class MainActivity : Activity(), GameClient.Listener {
             else SystemClock.elapsedRealtime() + (m.getDouble("turn_left") * 1000).toLong()
         timerTick.run()
 
+        val over = m.getBoolean("over")
+        tvTurn.text = when {
+            over -> "Partida terminada"
+            mine && phase == "roll" -> "🎲 ¡Tu turno! Lanza los dados"
+            mine -> "👆 Tu turno: mueve una ficha"
+            current != null -> "Turno de $current"
+            else -> "Esperando jugadores…"
+        }
+        tvTurn.setTextColor(if (mine) Color.WHITE else Theme.text)
+        turnBar.background = if (mine) roundBg(Theme.accent, null, 14) else roundBg(Theme.surface, Theme.border, 14)
+        if (freshRoll) feedback.sfxRoll()
+
         val dice = m.optJSONArray("dice")
         if (dice != null) {
             val pend = m.optJSONArray("pending")
@@ -1085,7 +1316,7 @@ class MainActivity : Activity(), GameClient.Listener {
         tvDice.text = if (dice != null) "Dados: ${dice.getInt(0)} + ${dice.getInt(1)}" else "Dados: -"
 
         val players = m.getJSONArray("players")
-        val sb = StringBuilder()
+        playersBox.removeAllViews()
         for (i in 0 until players.length()) {
             val p = players.getJSONObject(i)
             val pieces = p.getJSONArray("pieces")
@@ -1095,11 +1326,19 @@ class MainActivity : Activity(), GameClient.Listener {
                 if (pieces.getInt(k) == Board.JAIL) jail++
                 if (pieces.getInt(k) == Board.GOAL) goal++
             }
-            sb.append(if (p.getString("name") == current) "▶ " else "   ")
-                .append("${p.getString("name")} (${Board.ES[p.getString("color")]}) cárcel $jail · meta $goal")
-                .append(if (p.getBoolean("active")) "" else " [fuera]")
-                .append('\n')
+            val isCur = p.getString("name") == current
+            val card = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                background = roundBg(Theme.surface, if (isCur) Theme.accent else Theme.border, 12)
+                setPadding(dp(12), dp(8), dp(12), dp(8))
+                if (!p.getBoolean("active")) alpha = 0.5f
+            }
+            card.addView(dot(Board.HEX[p.getString("color")] ?: "#888888", 16))
+            card.addView(label((if (isCur) "▶ " else "") + p.getString("name") +
+                (if (p.getBoolean("active")) "" else " (fuera)"), 14f, isCur), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            card.addView(label("🔒 $jail   🏁 $goal", 13f, false, Theme.muted))
+            playersBox.addView(card, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(4) })
         }
-        tvPlayers.text = sb.toString().trimEnd()
     }
 }

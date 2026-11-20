@@ -4,6 +4,8 @@ import android.content.Context
 import android.media.AudioManager
 import android.media.ToneGenerator
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
@@ -41,7 +43,13 @@ class Feedback(context: Context) {
         }
     }
 
+    /** Silencia los sonidos (la vibración sigue). */
+    var soundOn = true
+
+    private val handler = Handler(Looper.getMainLooper())
+
     private fun beep(type: Int, ms: Int) {
+        if (!soundOn) return
         try {
             tone?.startTone(type, ms)
         } catch (e: Exception) {
@@ -61,19 +69,47 @@ class Feedback(context: Context) {
         beep(ToneGenerator.TONE_PROP_ACK, 250)
     }
 
-    /** Tú comiste una ficha. */
+    /** Tú comiste una ficha (el sonido lo da `sfxCapture`, que suena para todos). */
     fun captured() {
         vibrate(longArrayOf(0, 250))
-        beep(ToneGenerator.TONE_SUP_CONFIRM, 300)
     }
 
     /** Te comieron una ficha. */
     fun lost() {
         vibrate(longArrayOf(0, 500))
-        beep(ToneGenerator.TONE_PROP_NACK, 400)
     }
 
+    // ---- efectos de sonido del tablero (suenan para todos los jugadores) ----
+    private fun seq(vararg notes: Pair<Int, Int>) {
+        var t = 0L
+        for ((type, ms) in notes) {
+            handler.postDelayed({ beep(type, ms) }, t)
+            t += ms + 40L
+        }
+    }
+
+    /** Dados lanzados: tres golpecitos rápidos. */
+    fun sfxRoll() = seq(
+        ToneGenerator.TONE_DTMF_3 to 40, ToneGenerator.TONE_DTMF_7 to 40, ToneGenerator.TONE_DTMF_5 to 40
+    )
+
+    /** Una ficha avanza. */
+    fun sfxMove() = beep(ToneGenerator.TONE_DTMF_D, 70)
+
+    /** Una ficha regresa a la cárcel. */
+    fun sfxCapture() = seq(ToneGenerator.TONE_SUP_ERROR to 120, ToneGenerator.TONE_PROP_NACK to 200)
+
+    /** Una ficha llega a la meta. */
+    fun sfxGoal() = seq(ToneGenerator.TONE_PROP_ACK to 120, ToneGenerator.TONE_PROP_PROMPT to 160)
+
+    /** Ganaste la partida. */
+    fun sfxWin() = seq(
+        ToneGenerator.TONE_PROP_ACK to 150, ToneGenerator.TONE_PROP_PROMPT to 150,
+        ToneGenerator.TONE_SUP_CONFIRM to 300
+    )
+
     fun release() {
+        handler.removeCallbacksAndMessages(null)
         try {
             tone?.release()
         } catch (e: Exception) {
