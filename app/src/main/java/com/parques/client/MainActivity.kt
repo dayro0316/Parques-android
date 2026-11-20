@@ -4,6 +4,7 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
 import android.graphics.Color
+import android.graphics.Rect
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
@@ -19,6 +20,7 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewTreeObserver
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.CheckBox
@@ -478,6 +480,8 @@ class MainActivity : Activity(), GameClient.Listener {
             }
             etPass.requestFocus()
         }
+        kbListener?.let { window.decorView.viewTreeObserver.removeOnGlobalLayoutListener(it) }
+        kbListener = null
         window.decorView.setBackgroundColor(cream)
         setContentView(ScrollView(this).apply {
             isFillViewport = true
@@ -734,6 +738,7 @@ class MainActivity : Activity(), GameClient.Listener {
         root.addView(frame, LinearLayout.LayoutParams(match, 0, 1f))
 
         setContentView(root)
+        watchKeyboard()
         selectTab(currentTab)
         tvTimer.post { timerTick.run() }
     }
@@ -745,6 +750,11 @@ class MainActivity : Activity(), GameClient.Listener {
     private fun selectTab(i: Int) {
         currentTab = i
         if (i == 2) chatUnread = 0
+        else if (::etChat.isInitialized) {
+            etChat.clearFocus()
+            (getSystemService(INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager)
+                .hideSoftInputFromWindow(etChat.windowToken, 0)
+        }
         for ((k, p) in panels.withIndex()) p.visibility = if (k == i) View.VISIBLE else View.GONE
         val names = listOf("🏠 Sala", "🎲 Partida", "💬 Chat", "📜 Historial")
         for ((k, b) in tabButtons.withIndex()) {
@@ -1204,6 +1214,27 @@ class MainActivity : Activity(), GameClient.Listener {
     }
 
     private var seenEv = 0
+    private var seenRolls = 0
+    private var kbListener: ViewTreeObserver.OnGlobalLayoutListener? = null
+
+    /** Con el teclado abierto en la pestaña Chat se oculta el tablero para que el chat y la caja de texto tengan sitio. */
+    private fun watchKeyboard() {
+        val dv = window.decorView
+        kbListener?.let { dv.viewTreeObserver.removeOnGlobalLayoutListener(it) }
+        val l = ViewTreeObserver.OnGlobalLayoutListener {
+            if (user == null) return@OnGlobalLayoutListener
+            val r = Rect()
+            dv.getWindowVisibleDisplayFrame(r)
+            val open = dv.rootView.height - r.bottom > dp(120)
+            val hide = open && currentTab == 2
+            val vis = if (hide) View.GONE else View.VISIBLE
+            if (boardView.visibility != vis) boardView.visibility = vis
+            if (turnBar.visibility != vis) turnBar.visibility = vis
+            if (open && currentTab == 2) chatScroll.post { chatScroll.fullScroll(View.FOCUS_DOWN) }
+        }
+        kbListener = l
+        dv.viewTreeObserver.addOnGlobalLayoutListener(l)
+    }
 
     /** Avisos en pantalla cuando te comen una ficha, comes a alguien o te soplan. */
     private fun notify(e: JSONObject) {
@@ -1235,13 +1266,16 @@ class MainActivity : Activity(), GameClient.Listener {
         val total = m.getInt("log_total")
         val n = total - seen
         val lines = m.getJSONArray("log")
-        var freshRoll = false      // hubo un lanzamiento nuevo (de cualquier jugador): animar los dados
+        val rollsTotal = m.optInt("rolls_total", 0)
+        val lastRoll = m.optJSONArray("last_roll")
+        // lanzamiento nuevo (de cualquier jugador, aunque no tenga jugadas): animar los dados
+        var freshRoll = hadState && rollsTotal > seenRolls && lastRoll != null
+        seenRolls = rollsTotal
         if (n > 0) {
             for (i in maxOf(0, lines.length() - n) until lines.length()) {
                 val line = lines.getString(i)
                 log(line)
                 react(line)
-                if (n <= 3 && rollRegex.containsMatchIn(line)) freshRoll = true
             }
         }
         seen = total
@@ -1306,14 +1340,17 @@ class MainActivity : Activity(), GameClient.Listener {
         if (freshRoll) feedback.sfxRoll()
 
         val dice = m.optJSONArray("dice")
-        if (dice != null) {
-            val pend = m.optJSONArray("pending")
+        val shown = if (freshRoll) lastRoll else dice
+        if (shown != null) {
+            val pend = if (dice != null) m.optJSONArray("pending") else null
             val pendList = ArrayList<Int>()
             if (pend != null) for (i in 0 until pend.length()) pendList.add(pend.getInt(i))
-            if (freshRoll) diceView.roll(dice.getInt(0), dice.getInt(1), pendList)
-            else diceView.show(dice.getInt(0), dice.getInt(1), pendList)
+            if (freshRoll) diceView.roll(shown.getInt(0), shown.getInt(1), pendList)
+            else diceView.show(shown.getInt(0), shown.getInt(1), pendList)
         }
-        tvDice.text = if (dice != null) "Dados: ${dice.getInt(0)} + ${dice.getInt(1)}" else "Dados: -"
+        if (dice != null) tvDice.text = "Dados: ${dice.getInt(0)} + ${dice.getInt(1)}"
+        else if (shown != null) tvDice.text = "Dados: ${shown.getInt(0)} + ${shown.getInt(1)} (sin jugadas)"
+        else tvDice.text = "Dados: -"
 
         val players = m.getJSONArray("players")
         playersBox.removeAllViews()
