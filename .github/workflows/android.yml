@@ -2,6 +2,8 @@ name: Build APK
 on:
   push:
   workflow_dispatch:
+permissions:
+  contents: write
 jobs:
   apk:
     runs-on: ubuntu-latest
@@ -17,3 +19,12 @@ jobs:
         with:
           name: parques-apk
           path: app/build/outputs/apk/debug/app-debug.apk
+      - name: Publicar Release
+        if: github.ref_name == github.event.repository.default_branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk parques.apk
+          gh release create "build-${{ github.run_number }}" parques.apk \
+            --title "Versión ${{ github.run_number }}" \
+            --notes "Compilación automática ${{ github.run_number }} (${{ github.sha }})" --latest
