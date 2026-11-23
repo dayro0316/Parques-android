@@ -11,8 +11,20 @@ android {
         applicationId = "com.parques.client"
         minSdk = 24
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        // En GitHub Actions el número de ejecución sube en cada build: la app lo compara con el del último Release
+        val build = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInt()
+        versionCode = build
+        versionName = "1.$build"
+    }
+    // Firma fija (no la «debug» que se genera distinta en cada ejecución de Actions): así Android deja instalar
+    // cada versión nueva encima de la anterior, sin desinstalar. Es un proyecto de clase: la clave va en el repo.
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("parques.keystore")
+            storePassword = "parques123"
+            keyAlias = "parques"
+            keyPassword = "parques123"
+        }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
