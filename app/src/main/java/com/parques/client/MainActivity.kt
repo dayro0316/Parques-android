@@ -342,7 +342,7 @@ class MainActivity : Activity(), GameClient.Listener {
         }
 
         // Logo, nombre y frase
-        root.addView(ImageView(this).apply { setImageResource(R.mipmap.ic_launcher) }, LinearLayout.LayoutParams(dp(110), dp(110)))
+        root.addView(ImageView(this).apply { setImageResource(R.drawable.logo) }, LinearLayout.LayoutParams(dp(110), dp(110)))
         root.addView(TextView(this).apply {
             text = "Parqués Online"
             textSize = 26f
@@ -1203,6 +1203,7 @@ class MainActivity : Activity(), GameClient.Listener {
             "game_start" -> if (user != null) {
                 openingPending = true
                 seen = 0
+                chatBox.removeAllViews()
                 wasMyRoll = false
                 lastMover = null
                 log("Partida iniciada. Ajustes Berkeley: " + m.optJSONObject("sync"))
