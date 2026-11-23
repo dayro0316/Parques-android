@@ -1207,6 +1207,8 @@ class MainActivity : Activity(), GameClient.Listener {
                 openingPending = true
                 seen = 0
                 chatBox.removeAllViews()
+                logBuffer.setLength(0)      // historial vacío al empezar una partida nueva
+                tvLog.text = ""
                 wasMyRoll = false
                 lastMover = null
                 log("Partida iniciada. Ajustes Berkeley: " + m.optJSONObject("sync"))
