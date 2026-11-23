@@ -527,12 +527,12 @@ class MainActivity : Activity(), GameClient.Listener {
         tabReg.setOnClickListener { setMode("register") }
 
         val full = { LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT) }
-        root.addView(tabs, full())
+        root.addView(tabs, full().apply { topMargin = dp(14) })
         root.addView(userField, full())
         root.addView(passField, full())
         root.addView(confirmField, full())
         root.addView(cbRemember, full())
-        root.addView(bGo, full())
+        root.addView(bGo, full().apply { topMargin = dp(10) })
 
         // Estado de la conexión (Conectando…, Reintentando…)
         val status = TextView(this).apply {
@@ -544,7 +544,8 @@ class MainActivity : Activity(), GameClient.Listener {
         }
         root.addView(status)
 
-        root.addView(button("Cómo se juega") { dialog("Cómo se juega", RULES) })
+        root.addView(button("Cómo se juega") { dialog("Cómo se juega", RULES) },
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(12) })
 
         loginStatus = status
         btnLogin = bGo
