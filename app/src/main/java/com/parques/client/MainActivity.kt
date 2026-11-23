@@ -7,6 +7,7 @@ import android.graphics.Color
 import android.graphics.Rect
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -16,6 +17,7 @@ import android.text.Editable
 import android.text.InputFilter
 import android.text.InputType
 import android.text.TextWatcher
+import android.util.TypedValue
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -149,12 +151,79 @@ class MainActivity : Activity(), GameClient.Listener {
     private val levelEs = mapOf("easy" to "fácil", "normal" to "normal", "hard" to "difícil")
     private lateinit var etChat: EditText
 
+    private var updateChecked = false
+
+    /** Último Release publicado por Actions: (número de versión, enlace del APK), o null si no hay o no se pudo leer. */
+    private fun fetchLatestRelease(): Pair<Int, String>? {
+        val http = okhttp3.OkHttpClient.Builder()
+            .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
+        val req = okhttp3.Request.Builder()
+            .url("https://api.github.com/repos/dayro0316/Parques-android/releases/latest")
+            .header("Accept", "application/vnd.github+json")
+            .build()
+        val body = http.newCall(req).execute().use { resp ->
+            if (resp.isSuccessful) resp.body?.string() else null
+        } ?: return null
+        val rel = JSONObject(body)
+        val latest = rel.optString("tag_name").removePrefix("build-").toIntOrNull() ?: return null
+        val assets = rel.optJSONArray("assets") ?: return null
+        var url = ""
+        for (i in 0 until assets.length()) {
+            val a = assets.getJSONObject(i)
+            if (a.optString("name").endsWith(".apk")) url = a.optString("browser_download_url")
+        }
+        return if (url.isEmpty()) null else Pair(latest, url)
+    }
+
+    /**
+     * Pregunta a GitHub cuál es el último Release («build-N») y, si es más nuevo que esta versión, ofrece
+     * descargarlo. Si no hay internet o el repo es privado, no hace nada.
+     */
+    private fun checkUpdate() {
+        if (updateChecked) return
+        updateChecked = true
+        Thread {
+            try {
+                @Suppress("DEPRECATION")
+                val current = packageManager.getPackageInfo(packageName, 0).versionCode
+                val rel = fetchLatestRelease()
+                if (rel != null && rel.first > current) {
+                    runOnUiThread { askUpdate(current, rel.first, rel.second) }
+                }
+            } catch (e: Exception) {
+                // sin internet o sin permiso: no se avisa nada
+            }
+        }.start()
+    }
+
+    private fun askUpdate(current: Int, latest: Int, url: String) {
+        if (isFinishing) return
+        AlertDialog.Builder(this)
+            .setTitle("Hay una versión nueva")
+            .setMessage("Ya está disponible la versión $latest (tienes la $current).\n\nSe descarga en tu navegador; al terminar, ábrela para instalarla encima de la actual.")
+            .setPositiveButton("Actualizar") { _, _ ->
+                startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)))
+            }
+            .setNegativeButton("Después", null)
+            .show()
+    }
+
+    /** Limita el tamaño de letra del sistema (máx. 1.15x) para que la interfaz no se descuadre con letra muy grande. */
+    override fun attachBaseContext(base: android.content.Context) {
+        val cfg = android.content.res.Configuration(base.resources.configuration)
+        if (cfg.fontScale > 1.15f) cfg.fontScale = 1.15f
+        super.attachBaseContext(base.createConfigurationContext(cfg))
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Theme.init(this, prefs.getString("theme", "") ?: "")
         feedback.soundOn = prefs.getBoolean("sound", true)
         window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
         showLogin()
+        checkUpdate()
         // Si ya hay usuario guardado, entra solo.
         val u = prefs.getString("user", "") ?: ""
         val t = prefs.getString("token", "") ?: ""
@@ -185,9 +254,22 @@ class MainActivity : Activity(), GameClient.Listener {
 
     private fun smallButton(text: String, onClick: () -> Unit) = PillButton(this).apply {
         this.text = text
-        textSize = 16f
-        setPadding(dp(10), dp(6), dp(10), dp(6))
+        textSize = 14f
+        setPadding(dp(8), dp(6), dp(8), dp(6))
         setOnClickListener { onClick() }
+    }
+
+    /** Una sola línea: si el texto no cabe, la letra se reduce (nunca se parte en dos líneas). */
+    private fun <T : TextView> fit(t: T, minSp: Int = 9, maxSp: Int = 14): T {
+        t.maxLines = 1
+        t.ellipsize = null
+        if (Build.VERSION.SDK_INT >= 26) {
+            t.setAutoSizeTextTypeUniformWithConfiguration(minSp, maxSp, 1, TypedValue.COMPLEX_UNIT_SP)
+        } else {
+            t.setSingleLine()
+            t.textSize = minSp.toFloat() + 2f
+        }
+        return t
     }
 
     private fun row(vararg views: View) = LinearLayout(this).apply {
@@ -570,7 +652,7 @@ class MainActivity : Activity(), GameClient.Listener {
         val match = ViewGroup.LayoutParams.MATCH_PARENT
 
         // ---- barra superior
-        tvRoom = label(roomLabel(), 15f, true).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END }
+        tvRoom = fit(label(roomLabel(), 15f, true), 10, 15)
         btnSound = smallButton(if (feedback.soundOn) "🔊" else "🔇") {
             feedback.soundOn = !feedback.soundOn
             prefs.edit().putBoolean("sound", feedback.soundOn).apply()
@@ -584,7 +666,6 @@ class MainActivity : Activity(), GameClient.Listener {
         }
         val btnMenu = smallButton("⋮") { showMenu() }
         val top = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        top.addView(label("🎲", 20f), LinearLayout.LayoutParams(wrap, wrap).apply { marginEnd = dp(6) })
         top.addView(tvRoom, LinearLayout.LayoutParams(0, wrap, 1f))
         for (b in listOf(btnSound, btnTheme, btnMenu)) top.addView(b, LinearLayout.LayoutParams(wrap, wrap).apply { marginStart = dp(6) })
         root.addView(top)
@@ -618,17 +699,17 @@ class MainActivity : Activity(), GameClient.Listener {
 
         // ---- pestañas
         val names = listOf("🏠 Sala", "🎲 Partida", "💬 Chat", "📜 Historial")
-        tabButtons = names.mapIndexed { i, n -> smallButton(n) { selectTab(i) }.apply { textSize = 13f } }
+        tabButtons = names.mapIndexed { i, n -> fit(smallButton(n) { selectTab(i) }, 9, 13) }
         val tabRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         for (b in tabButtons) tabRow.addView(b, LinearLayout.LayoutParams(0, wrap, 1f).apply { setMargins(dp(2), dp(6), dp(2), dp(6)) })
         root.addView(tabRow)
 
         // ---- panel Sala
         tvHostInfo = label("", 12f, false, Theme.muted)
-        btnLevel = smallButton("") {
+        btnLevel = fit(smallButton("") {
             botLevelIdx = (botLevelIdx + 1) % levelKeys.size
             updateLevelButton()
-        }
+        }, 9, 14)
         updateLevelButton()
         btnAddBot = button("+ Bot") { client.send("add_bot", "level" to levelKeys[botLevelIdx]) }
         btnRemoveBot = button("✕ Quitar bot") { showRemoveBot() }.apply { visibility = View.GONE }
@@ -637,7 +718,7 @@ class MainActivity : Activity(), GameClient.Listener {
         val joinRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         for (c in Board.COLORS) {
             val hex = Color.parseColor(Board.HEX.getValue(c))
-            val b = smallButton(Board.ES.getValue(c)) { client.send("join", "color" to c) }
+            val b = fit(smallButton(Board.ES.getValue(c)) { client.send("join", "color" to c) }, 9, 14)
             b.style(hex, if (c == "yellow") Color.parseColor("#1B2433") else Color.WHITE)
             joinRow.addView(b, LinearLayout.LayoutParams(0, wrap, 1f).apply { setMargins(dp(2), dp(3), dp(2), dp(3)) })
         }
@@ -905,7 +986,11 @@ class MainActivity : Activity(), GameClient.Listener {
         renderMoves(false)
     }
 
-    private fun roomLabel() = if (roomPrivate) "🔒 Sala $roomName" else "🏠 Jugar rápido"
+    private fun roomLabel() = when {
+        roomPrivate -> "🔒 Sala $roomName"
+        Regex("M\\d+").matches(roomName) -> "🏠 Mesa ${roomName.drop(1)}"
+        else -> "🏠 Jugar rápido"
+    }
 
     /** Jugar rápido (sala pública), crear una sala privada con código, o entrar a una con código. */
     private fun showPlayMenu() {
@@ -1085,8 +1170,10 @@ class MainActivity : Activity(), GameClient.Listener {
                 seatsBox.removeAllViews()
                 lastLobby = null
                 selectTab(0)
-                tvRoom.text = if (roomName == "principal") "🏠 Jugar rápido" else "🔒 Sala $roomName"
-                toast(if (roomName == "principal") "Estás en Jugar rápido" else "Estás en la sala privada $roomName")
+                val pub = roomName == "principal" || Regex("M\\d+").matches(roomName)
+                roomPrivate = !pub
+                tvRoom.text = roomLabel()
+                toast(if (pub) "Estás en " + roomLabel().drop(3) else "Estás en la sala privada $roomName")
             }
             "left_game" -> if (user != null) { resetGameUi(); selectTab(0); toast("Saliste de la partida") }
             "registered" -> {
@@ -1105,6 +1192,7 @@ class MainActivity : Activity(), GameClient.Listener {
             }
             "lobby" -> if (user != null) onLobby(m)
             "game_start" -> if (user != null) {
+                openingPending = true
                 seen = 0
                 wasMyRoll = false
                 lastMover = null
@@ -1215,6 +1303,7 @@ class MainActivity : Activity(), GameClient.Listener {
 
     private var seenEv = 0
     private var seenRolls = 0
+    private var openingPending = false
     private var kbListener: ViewTreeObserver.OnGlobalLayoutListener? = null
 
     /** Con el teclado abierto en la pestaña Chat se oculta el tablero para que el chat y la caja de texto tengan sitio. */
@@ -1250,8 +1339,70 @@ class MainActivity : Activity(), GameClient.Listener {
         }
     }
 
+    /** Lanzamiento inicial: cada jugador lanza para decidir quién empieza (con desempates). */
+    private fun showOpening(rounds: org.json.JSONArray) {
+        var ri = 0
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(14), dp(16), dp(10))
+        }
+        val dlg = AlertDialog.Builder(this).setView(box).create()
+        dlg.window?.setBackgroundDrawable(roundBg(Theme.surface, null, 20))
+        fun step() {
+            if (ri > 0 && !dlg.isShowing) return
+            val r = rounds.getJSONArray(ri)
+            val last = ri == rounds.length() - 1
+            box.removeAllViews()
+            box.addView(label(if (ri == 0) "🎲 ¿Quién empieza?" else "🎲 ¡Empate! Desempatan", 18f, true))
+            val sums = ArrayList<TextView>()
+            val dices = ArrayList<DiceView>()
+            var best = 0
+            for (j in 0 until r.length()) {
+                val o = r.getJSONObject(j)
+                val d = o.getJSONArray("dice")
+                best = maxOf(best, d.getInt(0) + d.getInt(1))
+                val dv = DiceView(this)
+                val sum = label("", 18f, true)
+                val line = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    addView(dot(Board.HEX[o.getString("color")] ?: "#888888", 16))
+                    addView(label(o.getString("name"), 14f, true), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                    addView(dv, LinearLayout.LayoutParams(dp(130), ViewGroup.LayoutParams.WRAP_CONTENT))
+                    addView(sum, LinearLayout.LayoutParams(dp(34), ViewGroup.LayoutParams.WRAP_CONTENT))
+                }
+                box.addView(line)
+                dices.add(dv)
+                sums.add(sum)
+                dv.roll(d.getInt(0), d.getInt(1), emptyList())
+            }
+            val msg = label("", 15f, true, Theme.good).apply { gravity = Gravity.CENTER_HORIZONTAL; setPadding(0, dp(6), 0, 0) }
+            box.addView(msg)
+            feedback.sfxRoll()
+            handler.postDelayed({
+                var winner = ""
+                for (j in 0 until r.length()) {
+                    val d = r.getJSONObject(j).getJSONArray("dice")
+                    sums[j].text = (d.getInt(0) + d.getInt(1)).toString()
+                    if (d.getInt(0) + d.getInt(1) == best && winner.isEmpty()) winner = r.getJSONObject(j).getString("name")
+                }
+                msg.text = if (last) "🎉 $winner empieza" else "Empate a $best…"
+                handler.postDelayed({
+                    if (last) dlg.dismiss() else { ri++; step() }
+                }, if (last) 2000L else 1600L)
+            }, 1100L)
+        }
+        dlg.show()
+        step()
+    }
+
     private fun onState(m: JSONObject) {
         val hadState = state != null
+        val opening = m.optJSONArray("opening")
+        if (openingPending && opening != null && opening.length() > 0) {
+            openingPending = false
+            showOpening(opening)
+        }
         state = m
         val evTotal = m.optInt("events_total", 0)
         if (!hadState) seenEv = evTotal

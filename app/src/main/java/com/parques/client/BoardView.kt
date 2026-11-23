@@ -80,7 +80,10 @@ class BoardView(context: Context) : View(context) {
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
         val w = MeasureSpec.getSize(widthMeasureSpec)
         // cuadrado, pero sin pasar de ~46 % del alto de la pantalla para que quepan las pestañas debajo
-        val maxH = (resources.displayMetrics.heightPixels * 0.46f).toInt()
+        // en pantallas cortas el tablero se achica (hasta 36 %) para dejar sitio a las pestañas y su contenido
+        val hDp = resources.displayMetrics.heightPixels / resources.displayMetrics.density
+        val frac = (0.36f + (hDp - 640f) / (900f - 640f) * 0.10f).coerceIn(0.36f, 0.46f)
+        val maxH = (resources.displayMetrics.heightPixels * frac).toInt()
         val s = min(w, maxH)
         setMeasuredDimension(s, s)
     }
