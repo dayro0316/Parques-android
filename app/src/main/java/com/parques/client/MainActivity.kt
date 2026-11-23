@@ -361,7 +361,7 @@ class MainActivity : Activity(), GameClient.Listener {
 
         // Franja con los cuatro colores del juego
         val stripe = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        for (c in listOf("#E60000", "#FFE600", "#0A7D0A", "#0A0AE6")) {
+        for (c in listOf("#E60000", "#FFE600", "#0A0AE6", "#0A7D0A")) {
             stripe.addView(View(this).apply { setBackgroundColor(Color.parseColor(c)) }, LinearLayout.LayoutParams(0, dp(6), 1f))
         }
         root.addView(stripe, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(6)))
@@ -527,7 +527,8 @@ class MainActivity : Activity(), GameClient.Listener {
         tabReg.setOnClickListener { setMode("register") }
 
         val full = { LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT) }
-        root.addView(tabs, full().apply { topMargin = dp(14) })
+        root.addView(View(this), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(16)))   // aire bajo la franja
+        root.addView(tabs, full())
         root.addView(userField, full())
         root.addView(passField, full())
         root.addView(confirmField, full())
@@ -544,8 +545,9 @@ class MainActivity : Activity(), GameClient.Listener {
         }
         root.addView(status)
 
+        root.addView(View(this), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(14)))   // aire entre botones
         root.addView(button("Cómo se juega") { dialog("Cómo se juega", RULES) },
-            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(12) })
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
 
         loginStatus = status
         btnLogin = bGo
