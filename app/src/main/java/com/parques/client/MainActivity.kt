@@ -682,7 +682,7 @@ class MainActivity : Activity(), GameClient.Listener {
                 }
             }
         }
-        root.addView(boardView, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(6) })
+        root.addView(boardView, LinearLayout.LayoutParams(wrap, wrap).apply { topMargin = dp(6); gravity = Gravity.CENTER_HORIZONTAL })
 
         // ---- barra de turno
         tvTurn = label("Esperando jugadores…", 15f, true)
@@ -691,7 +691,7 @@ class MainActivity : Activity(), GameClient.Listener {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             background = roundBg(Theme.surface, Theme.border, 14)
-            setPadding(dp(14), dp(8), dp(14), dp(8))
+            setPadding(dp(14), dp(5), dp(14), dp(5))
             addView(tvTurn, LinearLayout.LayoutParams(0, wrap, 1f))
             addView(tvTimer)
         }
@@ -699,7 +699,7 @@ class MainActivity : Activity(), GameClient.Listener {
 
         // ---- pestañas
         val names = listOf("🏠 Sala", "🎲 Partida", "💬 Chat", "📜 Historial")
-        tabButtons = names.mapIndexed { i, n -> fit(smallButton(n) { selectTab(i) }, 9, 13) }
+        tabButtons = names.mapIndexed { i, n -> fit(smallButton(n) { selectTab(i) }.apply { setPadding(dp(4), dp(10), dp(4), dp(10)) }, 10, 15) }
         val tabRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         for (b in tabButtons) tabRow.addView(b, LinearLayout.LayoutParams(0, wrap, 1f).apply { setMargins(dp(2), dp(6), dp(2), dp(6)) })
         root.addView(tabRow)
@@ -725,13 +725,13 @@ class MainActivity : Activity(), GameClient.Listener {
         val salaCol = column().apply {
             addView(button("🏠 Jugar / salas") { showPlayMenu() })
             addView(tvHostInfo)
-            addView(label("Elige tu color", 13f, true).apply { setPadding(0, dp(8), 0, 0) })
+            addView(label("Elige tu color", 15f, true).apply { setPadding(0, dp(8), 0, 0) })
             addView(joinRow)
-            addView(label("Bots", 13f, true).apply { setPadding(0, dp(8), 0, 0) })
+            addView(label("Bots", 15f, true).apply { setPadding(0, dp(8), 0, 0) })
             addView(row(btnLevel, btnAddBot))
             addView(row(btnRemoveBot, btnShare))
             addView(button("✔ Listo") { client.send("ready") }.apply { style(Theme.good, Color.WHITE) })
-            addView(label("Mesa", 13f, true).apply { setPadding(0, dp(10), 0, dp(4)) })
+            addView(label("Mesa", 15f, true).apply { setPadding(0, dp(10), 0, dp(4)) })
             addView(seatsBox)
         }
         val salaPanel = ScrollView(this).apply { addView(salaCol) }
@@ -758,10 +758,19 @@ class MainActivity : Activity(), GameClient.Listener {
         }
         val partidaCol = column().apply {
             addView(playersBox)
-            addView(diceView, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(8) })
+            val diceRow = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(diceView, LinearLayout.LayoutParams(0, wrap, 1f))
+                addView(LinearLayout(this@MainActivity).apply {
+                    orientation = LinearLayout.VERTICAL
+                    addView(btnRoll, LinearLayout.LayoutParams(match, wrap).apply { setMargins(dp(3), dp(3), dp(3), dp(3)) })
+                    addView(btnRec, LinearLayout.LayoutParams(match, wrap).apply { setMargins(dp(3), dp(3), dp(3), dp(3)) })
+                }, LinearLayout.LayoutParams(0, wrap, 1f))
+            }
+            addView(diceRow, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(6) })
             addView(tvDice)
-            addView(tvHint, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(4) })
-            addView(row(btnRoll, btnRec))
+            addView(tvHint, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(2) })
             addView(label("Jugadas posibles", 14f, true).apply { setPadding(0, dp(8), 0, dp(2)) })
             addView(movesBox)
             addView(btnLeave, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(10) })
@@ -1280,7 +1289,7 @@ class MainActivity : Activity(), GameClient.Listener {
                 "${Board.ES[c]}: ${s.getString("name")}" +
                     (if (s.getBoolean("bot")) " 🤖 ${levelEs[s.optString("level", "normal")] ?: "normal"}" else "") +
                     (if (s.getBoolean("ready")) "  ✔ listo" else "")
-            card.addView(label(txt, 14f, s != null, if (s == null) Theme.muted else Theme.text))
+            card.addView(label(txt, 15f, s != null, if (s == null) Theme.muted else Theme.text))
             seatsBox.addView(card, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(4) })
         }
         if (playing) seatsBox.addView(label("Partida en curso: ingreso bloqueado", 12f, false, Theme.muted).apply { setPadding(0, dp(6), 0, 0) })
@@ -1317,7 +1326,7 @@ class MainActivity : Activity(), GameClient.Listener {
             val open = dv.rootView.height - r.bottom > dp(120)
             val hide = open && currentTab == 2
             val vis = if (hide) View.GONE else View.VISIBLE
-            if (boardView.visibility != vis) boardView.visibility = vis
+            if (boardView.visibility != vis) boardView.visibility = vis   // con el teclado abierto en el chat no hay sitio para el tablero
             if (turnBar.visibility != vis) turnBar.visibility = vis
             if (open && currentTab == 2) chatScroll.post { chatScroll.fullScroll(View.FOCUS_DOWN) }
         }
@@ -1505,6 +1514,7 @@ class MainActivity : Activity(), GameClient.Listener {
 
         val players = m.getJSONArray("players")
         playersBox.removeAllViews()
+        var rowBox: LinearLayout? = null
         for (i in 0 until players.length()) {
             val p = players.getJSONObject(i)
             val pieces = p.getJSONArray("pieces")
@@ -1516,17 +1526,25 @@ class MainActivity : Activity(), GameClient.Listener {
             }
             val isCur = p.getString("name") == current
             val card = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
+                orientation = LinearLayout.VERTICAL
                 background = roundBg(Theme.surface, if (isCur) Theme.accent else Theme.border, 12)
-                setPadding(dp(12), dp(8), dp(12), dp(8))
+                setPadding(dp(10), dp(6), dp(10), dp(6))
                 if (!p.getBoolean("active")) alpha = 0.5f
             }
-            card.addView(dot(Board.HEX[p.getString("color")] ?: "#888888", 16))
-            card.addView(label((if (isCur) "▶ " else "") + p.getString("name") +
-                (if (p.getBoolean("active")) "" else " (fuera)"), 14f, isCur), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-            card.addView(label("🔒 $jail   🏁 $goal", 13f, false, Theme.muted))
-            playersBox.addView(card, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(4) })
+            val head = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+            head.addView(dot(Board.HEX[p.getString("color")] ?: "#888888", 14))
+            head.addView(label((if (isCur) "▶ " else "") + p.getString("name") +
+                (if (p.getBoolean("active")) "" else " (fuera)"), 14f, isCur).apply {
+                maxLines = 1
+                ellipsize = TextUtils.TruncateAt.END
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            card.addView(head)
+            card.addView(label("🔒 $jail   🏁 $goal", 12f, false, Theme.muted))
+            if (i % 2 == 0) {
+                rowBox = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                playersBox.addView(rowBox, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(4) })
+            }
+            rowBox?.addView(card, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(dp(2), 0, dp(2), 0) })
         }
     }
 }

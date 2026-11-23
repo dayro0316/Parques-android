@@ -61,6 +61,7 @@ class PillButton(context: Context) : Button(context) {
         stateListAnimator = null
         minHeight = 0
         minimumHeight = 0
+        textSize = 15f
         minWidth = 0
         minimumWidth = 0
         setPadding(dpPx(14), dpPx(9), dpPx(14), dpPx(9))
